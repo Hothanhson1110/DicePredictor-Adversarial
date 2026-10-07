@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:orientation="vertical"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <LinearLayout
+        android:orientation="horizontal"
+        android:background="#1A73E8"
+        android:padding="8dp"
+        android:gravity="center_vertical"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content">
+
+        <Button android:id="@+id/btnBack"
+            android:text="←" android:textColor="#FFFFFF"
+            android:backgroundTint="#00000000" android:minWidth="0dp"
+            android:layout_width="wrap_content" android:layout_height="wrap_content"/>
+
+        <TextView android:text="📊 Dashboard"
+            android:textColor="#FFFFFF" android:textSize="18sp"
+            android:textStyle="bold" android:gravity="center"
+            android:layout_weight="1" android:layout_width="0dp"
+            android:layout_height="wrap_content"/>
+
+        <Button android:id="@+id/btnRefresh"
+            android:text="🔄" android:textColor="#FFFFFF"
+            android:backgroundTint="#00000000" android:minWidth="0dp"
+            android:layout_width="wrap_content" android:layout_height="wrap_content"/>
+    </LinearLayout>
+
+    <ScrollView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:maxHeight="320dp"
+        android:background="#F0F4FF">
+        <TextView android:id="@+id/tvStats"
+            android:fontFamily="monospace"
+            android:textSize="12sp"
+            android:padding="12dp"
+            android:textColor="#222222"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"/>
+    </ScrollView>
+
+    <LinearLayout
+        android:orientation="horizontal"
+        android:padding="6dp"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content">
+
+        <Button android:id="@+id/btnDelete100"
+            android:text="Xoá 100 gần nhất"
+            android:layout_weight="1"
+            android:layout_marginEnd="4dp"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"/>
+
+        <Button android:id="@+id/btnClearAll"
+            android:text="🗑 Xoá hết"
+            android:backgroundTint="#D93025"
+            android:textColor="#FFFFFF"
+            android:layout_weight="1"
+            android:layout_marginStart="4dp"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"/>
+    </LinearLayout>
+
+    <androidx.recyclerview.widget.RecyclerView
+        android:id="@+id/rvResults"
+        android:background="#FFFFFF"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"/>
+</LinearLayout>
