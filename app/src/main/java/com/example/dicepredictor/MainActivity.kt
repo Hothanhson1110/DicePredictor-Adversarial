@@ -160,7 +160,7 @@ class MainActivity : AppCompatActivity() {
 
         lifecycleScope.launch {
             withContext(Dispatchers.IO) {
-                val wasT = sum >= 10
+                val wasT = sum >= Predictor.T_THRESHOLD
                 val hasPred = pred != null
 
                 val row = DiceResult(
@@ -238,8 +238,7 @@ class MainActivity : AppCompatActivity() {
         b.tvBarT.text = "T ${"%.0f%%".format(tPct)}"
         b.tvBarX.text = "X ${"%.0f%%".format(xPct)}"
         b.tvLegend.text =
-            "T = 10–18   ·   X = 3–9   ·   lần cuối = ${p.lastSum} (${Predictor.classify(p.lastSum)})"
-
+    "T = 11–18   ·   X = 3–10   ·   lần cuối = ${p.lastSum} (${Predictor.classify(p.lastSum)})"
         b.tvSumPred.text = buildString {
             append("Tổng khả năng nhất: ")
             append("${p.bestSum}  (${"%.1f%%".format(p.bestSumProb * 100)})\n")
