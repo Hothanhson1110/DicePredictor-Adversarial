@@ -96,14 +96,14 @@ class DashboardActivity : AppCompatActivity() {
         // Đếm đám đông
         val crowdTotal = h.count { it.crowdChoice != '?' }
         val crowdWrong = h.count { r ->
-            if (r.crowdChoice == '?') false
-            else (r.crowdChoice == 'T') != (r.sum >= 10)
-        }
+    if (r.crowdChoice == '?') false
+    else (r.crowdChoice == 'T') != (r.sum >= Predictor.T_THRESHOLD)
+}
 
         b.tvStats.text = buildString {
             append("Tổng mẫu: ${h.size} / ${Predictor.WINDOW}\n")
-            append("T (10-18): $totalT   (${"%.1f%%".format(tPct)})\n")
-            append("X (3-9)  : $totalX   (${"%.1f%%".format(xPct)})\n\n")
+            append("T (11-18): $totalT   (${"%.1f%%".format(tPct)})\n")
+append("X (3-10) : $totalX   (${"%.1f%%".format(xPct)})\n\n")
             if (p != null) {
                 append("Lần cuối: ${h.last().d1}-${h.last().d2}-${h.last().d3} = ")
                 append("${h.last().sum} (${Predictor.classify(h.last().sum)})\n")
@@ -195,7 +195,7 @@ class DashboardActivity : AppCompatActivity() {
                                 d1 = d1, d2 = d2, d3 = d3, sum = newSum,
                                 sumCorrect = if (r.hasPred) r.predSum == newSum else false,
                                 classCorrect = if (r.hasPred)
-                                    r.predWasT == (newSum >= 10) else false
+    r.predWasT == (newSum >= Predictor.T_THRESHOLD) else false
                             )
                         )
                     }
