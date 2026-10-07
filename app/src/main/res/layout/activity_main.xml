@@ -1,0 +1,147 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:orientation="vertical"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <!-- ============ PHẦN TRÊN: NHẬP ============ -->
+    <LinearLayout
+        android:orientation="vertical"
+        android:padding="10dp"
+        android:background="#FFFFFF"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content">
+
+        <TextView android:text="🎲 Chọn 3 xúc xắc"
+            android:textSize="15sp" android:textStyle="bold" android:textColor="#222"
+            android:layout_width="wrap_content" android:layout_height="wrap_content"/>
+
+        <TextView android:text="Xúc xắc 1" android:textSize="12sp" android:paddingTop="6dp"
+            android:layout_width="wrap_content" android:layout_height="wrap_content"/>
+        <com.google.android.material.button.MaterialButtonToggleGroup
+            android:id="@+id/tg1" app:singleSelection="true"
+            android:layout_width="match_parent" android:layout_height="wrap_content"/>
+
+        <TextView android:text="Xúc xắc 2" android:textSize="12sp" android:paddingTop="6dp"
+            android:layout_width="wrap_content" android:layout_height="wrap_content"/>
+        <com.google.android.material.button.MaterialButtonToggleGroup
+            android:id="@+id/tg2" app:singleSelection="true"
+            android:layout_width="match_parent" android:layout_height="wrap_content"/>
+
+        <TextView android:text="Xúc xắc 3" android:textSize="12sp" android:paddingTop="6dp"
+            android:layout_width="wrap_content" android:layout_height="wrap_content"/>
+        <com.google.android.material.button.MaterialButtonToggleGroup
+            android:id="@+id/tg3" app:singleSelection="true"
+            android:layout_width="match_parent" android:layout_height="wrap_content"/>
+
+        <TextView android:text="👥 Đám đông chọn gì?"
+            android:textSize="13sp" android:textStyle="bold" android:textColor="#D93025"
+            android:paddingTop="10dp"
+            android:layout_width="wrap_content" android:layout_height="wrap_content"/>
+
+        <com.google.android.material.button.MaterialButtonToggleGroup
+            android:id="@+id/tgCrowd" app:singleSelection="true"
+            android:layout_width="match_parent" android:layout_height="wrap_content"/>
+
+        <Button android:id="@+id/btnConfirm"
+            android:text="✓ XÁC NHẬN" android:textSize="16sp" android:textStyle="bold"
+            android:layout_marginTop="10dp"
+            android:layout_width="match_parent" android:layout_height="wrap_content"/>
+
+        <TextView android:id="@+id/tvLastSaved" android:textSize="12sp"
+            android:paddingTop="4dp" android:textColor="#666"
+            android:layout_width="wrap_content" android:layout_height="wrap_content"/>
+    </LinearLayout>
+
+    <View android:layout_width="match_parent" android:layout_height="1dp"
+        android:background="#DDDDDD"/>
+
+    <!-- ============ PHẦN DƯỚI: DỰ ĐOÁN ============ -->
+    <ScrollView android:background="#F5F5F5"
+        android:layout_width="match_parent" android:layout_height="0dp"
+        android:layout_weight="1">
+        <LinearLayout android:orientation="vertical" android:padding="12dp"
+            android:layout_width="match_parent" android:layout_height="wrap_content">
+
+            <TextView android:text="🎯 Dự đoán lần tiếp theo"
+                android:textSize="16sp" android:textStyle="bold" android:textColor="#1A73E8"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"/>
+
+            <TextView android:id="@+id/tvMainClass" android:textSize="26sp"
+                android:textStyle="bold" android:paddingTop="8dp"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"/>
+
+            <LinearLayout android:orientation="horizontal" android:layout_marginTop="10dp"
+                android:layout_width="match_parent" android:layout_height="32dp">
+                <FrameLayout android:id="@+id/barT" android:background="#1E8E3E"
+                    android:layout_width="0dp" android:layout_height="match_parent"
+                    android:layout_weight="50">
+                    <TextView android:id="@+id/tvBarT" android:textColor="#FFFFFF"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:textStyle="bold" android:textSize="14sp"
+                        android:layout_gravity="center"/>
+                </FrameLayout>
+                <FrameLayout android:id="@+id/barX" android:background="#D93025"
+                    android:layout_width="0dp" android:layout_height="match_parent"
+                    android:layout_weight="50">
+                    <TextView android:id="@+id/tvBarX" android:textColor="#FFFFFF"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:textStyle="bold" android:textSize="14sp"
+                        android:layout_gravity="center"/>
+                </FrameLayout>
+            </LinearLayout>
+
+            <TextView android:id="@+id/tvLegend" android:textSize="12sp"
+                android:paddingTop="4dp" android:textColor="#444"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"/>
+
+            <TextView android:id="@+id/tvSumPred" android:textSize="14sp"
+                android:paddingTop="12dp" android:textColor="#222"
+                android:layout_width="match_parent" android:layout_height="wrap_content"/>
+
+            <TextView android:id="@+id/tvTopSums" android:textSize="13sp"
+                android:paddingTop="6dp" android:textColor="#555"
+                android:layout_width="match_parent" android:layout_height="wrap_content"/>
+
+            <TextView android:id="@+id/tvStreakBanner"
+                android:visibility="gone"
+                android:background="#FFF3CD"
+                android:textColor="#8A6D3B"
+                android:textStyle="bold"
+                android:textSize="14sp"
+                android:padding="10dp"
+                android:layout_marginTop="12dp"
+                android:gravity="center"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"/>
+
+            <TextView android:id="@+id/tvAccuracy"
+                android:textSize="13sp"
+                android:textColor="#0F5132"
+                android:background="#D1E7DD"
+                android:padding="10dp"
+                android:layout_marginTop="10dp"
+                android:fontFamily="monospace"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"/>
+
+            <TextView android:id="@+id/tvAdjust"
+                android:textSize="12sp"
+                android:textColor="#555"
+                android:paddingTop="4dp"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"/>
+
+            <TextView android:id="@+id/tvSample" android:textSize="12sp"
+                android:paddingTop="10dp" android:textColor="#888"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"/>
+
+            <Button android:id="@+id/btnDashboard" android:text="📊 Mở Dashboard"
+                android:layout_marginTop="14dp"
+                android:layout_width="match_parent" android:layout_height="wrap_content"/>
+        </LinearLayout>
+    </ScrollView>
+</LinearLayout>
