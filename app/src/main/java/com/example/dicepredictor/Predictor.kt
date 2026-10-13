@@ -5,20 +5,12 @@ import kotlin.math.exp
 
 /**
  * Predictor cấp chuyên gia — Hedge ensemble + adversarial adaptation.
- *
- * Triết lý: Dùng 9 chuyên gia độc lập (mỗi chuyên gia giỏi ở 1 loại pattern
- * khác nhau), phối hợp bằng thuật toán Hedge với regret bound O(√(T log N)).
- * Tự động phát hiện:
- *   - Regime change (chủ trò chơi đổi chiến thuật)
- *   - Adversarial (mô hình đang bị khai thác ngược)
- *
- * Độ phức tạp O(n), không dùng pow(), không boxing.
- * Với n = 10,000: ~5-15ms trên máy phổ thông.
+ * 9 chuyên gia độc lập, phối hợp bằng Hedge algorithm.
  */
 object Predictor {
 
     const val WINDOW = 10_000
-    const val T_THRESHOLD = 11          // ≥ 11 = T, < 11 = X
+    const val T_THRESHOLD = 11
     const val STREAK_THRESHOLD = 5
 
     // ---------- Chuyên gia ----------
@@ -40,10 +32,10 @@ object Predictor {
     )
 
     // ---------- Meta-learner ----------
-    private const val ETA = 0.05              // learning rate Hedge
-    private const val REGIME_DROP = 0.12      // ngưỡng phát hiện regime change
-    private const val ADV_N_MIN = 60          // cần ≥ 60 mẫu để đánh giá adversarial
-    private const val ADV_CORR_THRESHOLD = -0.12  // corr < ngưỡng này → adversarial
+    private const val ETA = 0.05
+    private const val REGIME_DROP = 0.12
+    private const val ADV_N_MIN = 60
+    private const val ADV_CORR_THRESHOLD = -0.12
 
     data class Prediction(
         val sampleCount: Int,
@@ -55,24 +47,22 @@ object Predictor {
         val bestSumProb: Double,
         val topSums: List<Pair<Int, Double>>,
         val dieProbs: List<Map<Int, Double>>,
-
-        // Meta info
-        val ensembleAcc: Double,          // accuracy dài hạn của ensemble
-        val recentAcc: Double,            // accuracy gần đây (EWMA)
+        val ensembleAcc: Double,
+        val recentAcc: Double,
         val bestExpertName: String,
         val bestExpertAcc: Double,
         val worstExpertName: String,
-        val regimeChange: Boolean,        // phát hiện đổi regime
-        val adversarialMode: Boolean,     // đang tự đảo dự đoán
-        val adversarialCorr: Double,      // corr dự đoán vs kết quả (-1..+1)
+        val regimeChange: Boolean,
+        val adversarialMode: Boolean,
+        val adversarialCorr: Double,
         val streakClass: Int,
         val streakSum: Int,
         val biasT: Double,
-        val crowdRate: Double,            // P(kết quả X | đám đông chọn T)
+        val crowdRate: Double,
         val contrarianAdj: Double,
         val expertWeights: List<Pair<String, Double>>,
         val flipped: Boolean,
-        val rawPT: Double                 // pT trước khi adjust
+        val rawPT: Double
     )
 
     fun classify(sum: Int): Char = if (sum >= T_THRESHOLD) 'T' else 'X'
@@ -84,7 +74,7 @@ object Predictor {
         val n = h.size
 
         // ============================================================
-        // Precompute exp table: exp(-ETA * k). Chỉ 1 lần gọi exp().
+        // Precompute exp table
         // ============================================================
         val eeta = exp(-ETA)
         val expTable = DoubleArray(n + 1)
@@ -92,43 +82,37 @@ object Predictor {
         for (k in 1..n) expTable[k] = expTable[k - 1] * eeta
 
         // ============================================================
-        // State của 9 chuyên gia
+        // State chuyên gia
         // ============================================================
-        // EWMA (3 timescale)
         var ewmaS = 0.5; var ewmaM = 0.5; var ewmaL = 0.5
         val decS = 0.85; val decM = 0.97; val decL = 0.997
 
-        // Markov bậc 1
         var last1 = 0
         var m1_TT = 0.5; var m1_TX = 0.5
         var m1_XT = 0.5; var m1_XX = 0.5
 
-        // Markov bậc 2 (state 2-bit)
         var last2 = 0
         val m2_T = DoubleArray(4) { 0.5 }
         val m2_X = DoubleArray(4) { 0.5 }
 
-        // Markov bậc 3 (state 3-bit)
         var last3 = 0
         val m3_T = DoubleArray(8) { 0.5 }
         val m3_X = DoubleArray(8) { 0.5 }
 
-        // Pattern 4-bit (16 buckets)
         var last4 = 0
         val p4_T = DoubleArray(16) { 0.5 }
         val p4_X = DoubleArray(16) { 0.5 }
 
-        // Crowd-following
         var cT_T = 0.5; var cT_X = 0.5
         var cX_T = 0.5; var cX_X = 0.5
 
-        // Die face distributions (cho convolution bestSum)
-        val d1 = DoubleArray(7) { 0.5 }
-        val d2 = DoubleArray(7) { 0.5 }
-        val d3 = DoubleArray(7) { 0.5 }
+        // Die face distributions
+        val face1 = DoubleArray(7) { 0.5 }
+        val face2 = DoubleArray(7) { 0.5 }
+        val face3 = DoubleArray(7) { 0.5 }
 
         // ============================================================
-        // Meta-learner state
+        // Meta state
         // ============================================================
         val cumLoss = IntArray(N_EXPERTS)
         val expertCorrect = IntArray(N_EXPERTS)
@@ -146,19 +130,22 @@ object Predictor {
         val predP = DoubleArray(N_EXPERTS)
 
         // ============================================================
-        // VÒNG LẶP CHÍNH: replay history, cập nhật chuyên gia + meta
+        // VÒNG LẶP CHÍNH
         // ============================================================
         for (i in 0 until n) {
             val r = h[i]
             val actualT = r.sum >= T_THRESHOLD
 
-            // ----- Dự đoán của từng chuyên gia cho ván i -----
+            // Dự đoán của từng chuyên gia
             predP[E_EWMA_S] = ewmaS
             predP[E_EWMA_M] = ewmaM
             predP[E_EWMA_L] = ewmaL
 
-            predP[E_MKV1] = if (last1 == 1) m1_TT / (m1_TT + m1_TX)
-                            else           m1_XT / (m1_XT + m1_XX)
+            predP[E_MKV1] = if (last1 == 1) {
+                m1_TT / (m1_TT + m1_TX)
+            } else {
+                m1_XT / (m1_XT + m1_XX)
+            }
             predP[E_MKV2] = m2_T[last2] / (m2_T[last2] + m2_X[last2])
             predP[E_MKV3] = m3_T[last3] / (m3_T[last3] + m3_X[last3])
             predP[E_PAT4] = p4_T[last4] / (p4_T[last4] + p4_X[last4])
@@ -170,27 +157,27 @@ object Predictor {
                 else -> 0.5
             }
 
-            // ----- Cập nhật Hedge (0-1 loss) -----
+            // Cập nhật Hedge (0-1 loss)
             for (e in 0 until N_EXPERTS) {
                 val predictedT = predP[e] >= 0.5
                 if (predictedT == actualT) {
-                    expertCorrect[e]++
+                    expertCorrect[e] += 1
                 } else {
-                    cumLoss[e]++
+                    cumLoss[e] += 1
                 }
-                expertTotal[e]++
+                expertTotal[e] += 1
             }
 
-            // ----- Ensemble prediction cho ván i (để tracking) -----
-            var wSum = 0.0
-            var ensP = 0.0
+            // Ensemble prediction
+            var wSumLocal = 0.0
+            var ensPLocal = 0.0
             for (e in 0 until N_EXPERTS) {
                 val w = expTable[cumLoss[e]]
-                wSum += w
-                ensP += w * predP[e]
+                wSumLocal += w
+                ensPLocal += w * predP[e]
             }
-            ensP /= wSum
-            val ensT = ensP >= 0.5
+            ensPLocal /= wSumLocal
+            val ensT = ensPLocal >= 0.5
 
             if (ensT == actualT) {
                 cumCorrect += 1.0
@@ -200,35 +187,67 @@ object Predictor {
             }
             cumTotal++
 
-            biasSum += (if (actualT) 1.0 else 0.0) - ensP
-            advSum += (if (ensT) 1.0 else -1.0) * (if (actualT) 1.0 else -1.0)
+            val y = if (actualT) 1.0 else 0.0
+            biasSum += y - ensPLocal
+            val ensSign = if (ensT) 1.0 else -1.0
+            val actualSign = if (actualT) 1.0 else -1.0
+            advSum += ensSign * actualSign
             advN++
 
-            // ----- Update chuyên gia với kết quả thực -----
-            val y = if (actualT) 1.0 else 0.0
-
+            // ---------- Update chuyên gia ----------
             ewmaS = decS * ewmaS + (1 - decS) * y
             ewmaM = decM * ewmaM + (1 - decM) * y
             ewmaL = decL * ewmaL + (1 - decL) * y
 
             if (last1 == 1) {
-                if (actualT) m1_TT += 1 else m1_TX += 1
+                if (actualT) {
+                    m1_TT += 1
+                } else {
+                    m1_TX += 1
+                }
             } else {
-                if (actualT) m1_XT += 1 else m1_XX += 1
+                if (actualT) {
+                    m1_XT += 1
+                } else {
+                    m1_XX += 1
+                }
             }
 
-            if (actualT) m2_T[last2] += 1 else m2_X[last2] += 1
-            if (actualT) m3_T[last3] += 1 else m3_X[last3] += 1
-            if (actualT) p4_T[last4] += 1 else p4_X[last4] += 1
+            // Markov bậc 2/3, Pattern 4 — viết rõ ràng bằng if-block
+            if (actualT) {
+                m2_T[last2] = m2_T[last2] + 1
+                m3_T[last3] = m3_T[last3] + 1
+                p4_T[last4] = p4_T[last4] + 1
+            } else {
+                m2_X[last2] = m2_X[last2] + 1
+                m3_X[last3] = m3_X[last3] + 1
+                p4_X[last4] = p4_X[last4] + 1
+            }
 
+            // Crowd
             when (r.crowdChoice) {
-                'T' -> if (actualT) cT_T += 1 else cT_X += 1
-                'X' -> if (actualT) cX_T += 1 else cX_X += 1
+                'T' -> {
+                    if (actualT) {
+                        cT_T += 1
+                    } else {
+                        cT_X += 1
+                    }
+                }
+                'X' -> {
+                    if (actualT) {
+                        cX_T += 1
+                    } else {
+                        cX_X += 1
+                    }
+                }
             }
 
-            d1[r.d1] += 1; d2[r.d2] += 1; d3[r.d3] += 1
+            // Die face distributions — tách thành 3 dòng riêng
+            face1[r.d1] = face1[r.d1] + 1
+            face2[r.d2] = face2[r.d2] + 1
+            face3[r.d3] = face3[r.d3] + 1
 
-            // ----- Shift bit-state -----
+            // Shift bit-state
             val bit = if (actualT) 1 else 0
             last1 = bit
             last2 = ((last2 shl 1) or bit) and 0b11
@@ -237,14 +256,17 @@ object Predictor {
         }
 
         // ============================================================
-        // DỰ ĐOÁN CUỐI (state đã là mới nhất)
+        // DỰ ĐOÁN CUỐI
         // ============================================================
         val finalP = DoubleArray(N_EXPERTS)
         finalP[E_EWMA_S] = ewmaS
         finalP[E_EWMA_M] = ewmaM
         finalP[E_EWMA_L] = ewmaL
-        finalP[E_MKV1] = if (last1 == 1) m1_TT / (m1_TT + m1_TX)
-                          else           m1_XT / (m1_XT + m1_XX)
+        finalP[E_MKV1] = if (last1 == 1) {
+            m1_TT / (m1_TT + m1_TX)
+        } else {
+            m1_XT / (m1_XT + m1_XX)
+        }
         finalP[E_MKV2] = m2_T[last2] / (m2_T[last2] + m2_X[last2])
         finalP[E_MKV3] = m3_T[last3] / (m3_T[last3] + m3_X[last3])
         finalP[E_PAT4] = p4_T[last4] / (p4_T[last4] + p4_X[last4])
@@ -257,25 +279,32 @@ object Predictor {
             else -> 0.5
         }
 
-        // ----- Hedge weights -----
+        // Hedge weights
         val weights = DoubleArray(N_EXPERTS)
         var wSum2 = 0.0
         for (e in 0 until N_EXPERTS) {
             weights[e] = expTable[cumLoss[e]]
             wSum2 += weights[e]
         }
-        for (e in 0 until N_EXPERTS) weights[e] /= wSum2
+        for (e in 0 until N_EXPERTS) {
+            weights[e] = weights[e] / wSum2
+        }
 
         var pT = 0.0
-        for (e in 0 until N_EXPERTS) pT += weights[e] * finalP[e]
+        for (e in 0 until N_EXPERTS) {
+            pT += weights[e] * finalP[e]
+        }
         val rawPT = pT
 
-        // ----- Bias correction (nhẹ nhàng) -----
-        val biasT = if (cumTotal > 0)
-            (biasSum / cumTotal).coerceIn(-0.10, 0.10) else 0.0
+        // Bias correction
+        val biasT = if (cumTotal > 0) {
+            (biasSum / cumTotal).coerceIn(-0.10, 0.10)
+        } else {
+            0.0
+        }
         pT = (pT + biasT * 0.5).coerceIn(0.02, 0.98)
 
-        // ----- Adversarial flip (liên tục, không nhị phân) -----
+        // Adversarial flip
         val advCorr = if (advN > 0) advSum / advN else 0.0
         var adversarialMode = false
         var flipped = false
@@ -286,10 +315,12 @@ object Predictor {
             pT = pT * (1 - alpha) + (1 - pT) * alpha
         }
 
-        // ----- Regime change → shrink về 0.5 -----
+        // Regime change
         val longAcc = if (cumTotal > 0) cumCorrect / cumTotal else 0.5
         val regimeChange = cumTotal > 100 && recentAcc < longAcc - REGIME_DROP
-        if (regimeChange) pT = pT * 0.75 + 0.5 * 0.25
+        if (regimeChange) {
+            pT = pT * 0.75 + 0.5 * 0.25
+        }
 
         pT = pT.coerceIn(0.02, 0.98)
         val pX = 1.0 - pT
@@ -297,55 +328,86 @@ object Predictor {
         // ============================================================
         // BestSum convolution
         // ============================================================
-        val p1 = DoubleArray(7); val p2 = DoubleArray(7); val p3 = DoubleArray(7)
-        var s1 = 0.0; var s2 = 0.0; var s3 = 0.0
-        for (v in 1..6) { s1 += d1[v]; s2 += d2[v]; s3 += d3[v] }
+        val pf1 = DoubleArray(7)
+        val pf2 = DoubleArray(7)
+        val pf3 = DoubleArray(7)
+        var s1 = 0.0
+        var s2 = 0.0
+        var s3 = 0.0
         for (v in 1..6) {
-            p1[v] = d1[v] / s1
-            p2[v] = d2[v] / s2
-            p3[v] = d3[v] / s3
+            s1 += face1[v]
+            s2 += face2[v]
+            s3 += face3[v]
         }
+        for (v in 1..6) {
+            pf1[v] = face1[v] / s1
+            pf2[v] = face2[v] / s2
+            pf3[v] = face3[v] / s3
+        }
+
         val sumProbs = DoubleArray(19)
         for (a in 1..6) {
-            val pa = p1[a]
+            val pa = pf1[a]
             for (b in 1..6) {
-                val pab = pa * p2[b]
-                for (c in 1..6) sumProbs[a + b + c] += pab * p3[c]
+                val pab = pa * pf2[b]
+                for (c in 1..6) {
+                    sumProbs[a + b + c] += pab * pf3[c]
+                }
             }
         }
+
         val ordered = (3..18).sortedByDescending { sumProbs[it] }
         val topSums = ordered.take(5).map { it to sumProbs[it] }
         val bestSum = ordered.first()
         val bestSumProb = sumProbs[bestSum]
 
         val dieProbsMaps = listOf(
-            (1..6).associateWith { p1[it] },
-            (1..6).associateWith { p2[it] },
-            (1..6).associateWith { p3[it] }
+            (1..6).associateWith { pf1[it] },
+            (1..6).associateWith { pf2[it] },
+            (1..6).associateWith { pf3[it] }
         )
 
-        // ----- Streaks -----
+        // Streaks
         var streakClass = 0
         for (i in n - 1 downTo 0) {
             val r = h[i]
             if (!r.hasPred) break
-            if (r.classCorrect) streakClass++ else break
+            if (r.classCorrect) {
+                streakClass++
+            } else {
+                break
+            }
         }
         var streakSum = 0
         for (i in n - 1 downTo 0) {
             val r = h[i]
             if (!r.hasPred) break
-            if (r.sumCorrect) streakSum++ else break
+            if (r.sumCorrect) {
+                streakSum++
+            } else {
+                break
+            }
         }
 
-        // ----- Best / worst expert -----
-        var bestIdx = 0; var worstIdx = 0
-        var bestA = -1.0; var worstA = 2.0
+        // Best/worst expert
+        var bestIdx = 0
+        var worstIdx = 0
+        var bestA = -1.0
+        var worstA = 2.0
         for (e in 0 until N_EXPERTS) {
-            val a = if (expertTotal[e] > 0)
-                expertCorrect[e].toDouble() / expertTotal[e] else 0.0
-            if (a > bestA) { bestA = a; bestIdx = e }
-            if (a < worstA) { worstA = a; worstIdx = e }
+            val a = if (expertTotal[e] > 0) {
+                expertCorrect[e].toDouble() / expertTotal[e]
+            } else {
+                0.0
+            }
+            if (a > bestA) {
+                bestA = a
+                bestIdx = e
+            }
+            if (a < worstA) {
+                worstA = a
+                worstIdx = e
+            }
         }
 
         val crowdRate = cT_X / (cT_T + cT_X)
