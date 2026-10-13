@@ -22,9 +22,19 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var b: ActivityMainBinding
     private lateinit var dao: DiceDao
+
+    /** Giá trị đang chọn của 3 xúc xắc (1..6). Mặc định 1. */
     private val selected = IntArray(3) { 1 }
+
+    /** Dự đoán đang hiển thị — sẽ được lưu kèm khi user xác nhận. */
     private var currentPrediction: Predictor.Prediction? = null
+
+    /** Lựa chọn đám đông hiện tại: 'T' / 'X' / '?' (không chắc). */
     private var crowdChoice: Char = '?'
+
+    // ============================================================
+    // VÒNG ĐỜI
+    // ============================================================
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -33,9 +43,12 @@ class MainActivity : AppCompatActivity() {
 
         dao = AppDatabase.get(this).diceDao()
 
+        // Xây 3 hàng nút 1-6
         buildRow(b.tg1, 0)
         buildRow(b.tg2, 1)
         buildRow(b.tg3, 2)
+
+        // Xây hàng đám đông T / X / Không chắc
         buildCrowdRow()
 
         b.btnConfirm.setOnClickListener { onConfirm() }
@@ -50,6 +63,10 @@ class MainActivity : AppCompatActivity() {
         super.onResume()
         refreshPrediction()
     }
+
+    // ============================================================
+    // UI BUILDERS
+    // ============================================================
 
     /** Tạo 6 nút 1..6 trong 1 MaterialButtonToggleGroup với màu rõ ràng. */
     private fun buildRow(tg: MaterialButtonToggleGroup, rowIdx: Int) {
@@ -116,7 +133,11 @@ class MainActivity : AppCompatActivity() {
         )
         val strokeCSL = ColorStateList.valueOf(Color.parseColor("#D93025"))
 
-        val items = listOf("T" to 'T', "X" to 'X', "Không chắc" to '?')
+        val items = listOf(
+            "T" to 'T',
+            "X" to 'X',
+            "Không chắc" to '?'
+        )
 
         for ((label, value) in items) {
             val btn = MaterialButton(
@@ -152,8 +173,14 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    // ============================================================
+    // XÁC NHẬN KẾT QUẢ
+    // ============================================================
+
     private fun onConfirm() {
-        val d1 = selected[0]; val d2 = selected[1]; val d3 = selected[2]
+        val d1 = selected[0]
+        val d2 = selected[1]
+        val d3 = selected[2]
         val sum = d1 + d2 + d3
         val pred = currentPrediction
         val curCrowd = crowdChoice
@@ -176,26 +203,37 @@ class MainActivity : AppCompatActivity() {
                 )
                 dao.insert(row)
 
+                // Auto-prune: giữ đúng WINDOW dòng
                 val c = dao.count()
-                if (c > Predictor.WINDOW) dao.deleteOldest(c - Predictor.WINDOW)
+                if (c > Predictor.WINDOW) {
+                    dao.deleteOldest(c - Predictor.WINDOW)
+                }
             }
 
-            // Reset về "Không chắc"
+            // Reset đám đông về "Không chắc"
             crowdChoice = '?'
             if (b.tgCrowd.childCount >= 3) {
                 b.tgCrowd.check(b.tgCrowd.getChildAt(2).id)
             }
 
-            val status = if (pred == null) "" else {
-                val tOk = if (pred!!.nextIsT == (sum >= 10)) "✓" else "✗"
-                val sOk = if (pred!!.bestSum == sum) "✓" else "✗"
+            // Hiển thị trạng thái đúng/sai của dự đoán vừa rồi
+            val status = if (pred == null) {
+                ""
+            } else {
+                val tOk = if (pred.nextIsT == (sum >= Predictor.T_THRESHOLD)) "✓" else "✗"
+                val sOk = if (pred.bestSum == sum) "✓" else "✗"
                 "  |  T/X $tOk  điểm $sOk"
             }
             b.tvLastSaved.text =
                 "Đã lưu: $d1 - $d2 - $d3 = $sum  (${Predictor.classify(sum)})$status"
+
             refreshPrediction()
         }
     }
+
+    // ============================================================
+    // REFRESH DỰ ĐOÁN
+    // ============================================================
 
     private fun refreshPrediction() {
         lifecycleScope.launch {
@@ -203,19 +241,29 @@ class MainActivity : AppCompatActivity() {
                 dao.lastNDesc(Predictor.WINDOW).asReversed()
             }
             val total = withContext(Dispatchers.IO) { dao.count() }
-            val pred = withContext(Dispatchers.Default) { Predictor.predict(history) }
+            val pred = withContext(Dispatchers.Default) {
+                Predictor.predict(history)
+            }
             currentPrediction = pred
             render(pred, total)
         }
     }
 
+    // ============================================================
+    // RENDER
+    // ============================================================
+
     private fun render(p: Predictor.Prediction?, total: Int) {
         if (p == null) {
             b.tvMainClass.text = "—"
-            b.tvBarT.text = ""; b.tvBarX.text = ""
+            b.tvBarT.text = ""
+            b.tvBarX.text = ""
             b.tvLegend.text = "Chưa có dữ liệu. Nhập ít nhất 1 lần."
-            b.tvSumPred.text = ""; b.tvTopSums.text = ""; b.tvSample.text = ""
-            b.tvAccuracy.text = ""; b.tvAdjust.text = ""
+            b.tvSumPred.text = ""
+            b.tvTopSums.text = ""
+            b.tvSample.text = ""
+            b.tvAccuracy.text = ""
+            b.tvAdjust.text = ""
             b.tvStreakBanner.visibility = View.GONE
             return
         }
@@ -230,15 +278,19 @@ class MainActivity : AppCompatActivity() {
             if (p.nextIsT) 0xFF1E8E3E.toInt() else 0xFFD93025.toInt()
         )
 
+        // Thanh T | X
         val lp1 = b.barT.layoutParams as LinearLayout.LayoutParams
-        lp1.weight = p.probT.toFloat(); b.barT.layoutParams = lp1
+        lp1.weight = p.probT.toFloat()
+        b.barT.layoutParams = lp1
         val lp2 = b.barX.layoutParams as LinearLayout.LayoutParams
-        lp2.weight = p.probX.toFloat(); b.barX.layoutParams = lp2
+        lp2.weight = p.probX.toFloat()
+        b.barX.layoutParams = lp2
 
         b.tvBarT.text = "T ${"%.0f%%".format(tPct)}"
         b.tvBarX.text = "X ${"%.0f%%".format(xPct)}"
         b.tvLegend.text =
-    "T = 11–18   ·   X = 3–10   ·   lần cuối = ${p.lastSum} (${Predictor.classify(p.lastSum)})"
+            "T = 11–18   ·   X = 3–10   ·   lần cuối = ${p.lastSum} (${Predictor.classify(p.lastSum)})"
+
         b.tvSumPred.text = buildString {
             append("Tổng khả năng nhất: ")
             append("${p.bestSum}  (${"%.1f%%".format(p.bestSumProb * 100)})\n")
@@ -250,46 +302,54 @@ class MainActivity : AppCompatActivity() {
             "${it.first} (${"%.0f%%".format(it.second * 100)})"
         }
 
-        if (p.feedbackSamples > 0) {
-            b.tvAccuracy.text = buildString {
-                append("📈 Độ chính xác ${p.feedbackSamples} lần gần nhất:\n")
-                append("  • T/X:  ${"%.1f%%".format(p.accClassRecent * 100)}")
-                append("   (chuỗi đúng liên tiếp: ${p.streakClass})\n")
-                append("  • Điểm: ${"%.1f%%".format(p.accSumRecent * 100)}")
-                append("   (chuỗi đúng liên tiếp: ${p.streakSum})")
-            }
-        } else {
-            b.tvAccuracy.text =
-                "📈 Chưa có dữ liệu đánh giá — nhập thêm để hệ thống tự học."
+        // Khối accuracy + ensemble info
+        b.tvAccuracy.text = buildString {
+            append("📈 Accuracy ensemble: ")
+            append("${"%.1f%%".format(p.ensembleAcc * 100)}\n")
+            append("⚡ Accuracy gần đây:  ")
+            append("${"%.1f%%".format(p.recentAcc * 100)}\n")
+            append("🏆 Chuyên gia tốt: ${p.bestExpertName} ")
+            append("(${"%.0f%%".format(p.bestExpertAcc * 100)})\n")
+            append("⚠️  Chuyên gia tệ: ${p.worstExpertName}\n")
+            append("📊 Streak T/X: ${p.streakClass}  ·  Streak điểm: ${p.streakSum}")
         }
 
-        // Khối điều chỉnh + adversarial
+        // Khối điều chỉnh + trạng thái adversarial
         val adj = buildString {
-            append("⚙ bias = ")
-            append("%+.1f%%".format(p.biasT * 100))
-            append("  ·  k = ")
-            append("%.2f".format(p.adaptiveK))
-            append("\n📊 Markov b2 pT = ")
-            append("${"%.1f%%".format(p.markov2ProbT * 100)}")
-            append("  ·  Raw pT = ")
-            append("${"%.1f%%".format(p.rawPT * 100)}")
-            if (p.crowdAccuracy > 0) {
-                append("\n👥 Đám đông đúng = ")
-                append("${"%.0f%%".format(p.crowdAccuracy * 100)}")
+            append("⚙ Raw pT = ${"%.1f%%".format(p.rawPT * 100)}")
+            append("  ·  bias = ${"%+.1f%%".format(p.biasT * 100)}\n")
+            append("📉 Corr dự đoán/kết quả = ${"%+.2f".format(p.adversarialCorr)}\n")
+            if (p.crowdRate > 0) {
+                append("👥 P(X | đám đông chọn T) = ")
+                append("${"%.0f%%".format(p.crowdRate * 100)}")
                 append("  ·  Contrarian = ")
-                append("%+.1f%%".format(p.contrarianAdj * 100))
+                append("${"%+.1f%%".format(p.contrarianAdj * 100)}\n")
+            }
+
+            // Top 3 chuyên gia theo trọng số
+            val top3 = p.expertWeights.sortedByDescending { it.second }.take(3)
+            append("🥇 Top 3: ")
+            append(
+                top3.joinToString("  ") {
+                    "${it.first}(${"%.0f%%".format(it.second * 100)})"
+                }
+            )
+
+            if (p.regimeChange) {
+                append("\n⚠️ PHÁT HIỆN ĐỔI REGIME — độ tin cậy đã giảm")
             }
             if (p.adversarialMode) {
-                append("\n🔴 CHẾ ĐỘ ĐỐI KHÁNG — model bị chơi, đã đảo dự đoán")
+                append("\n🔴 CHẾ ĐỘ ĐỐI KHÁNG — model đang bị chơi, đã đảo dự đoán")
             }
         }
         b.tvAdjust.text = adj
 
+        // Banner streak ≥ 5
         val maxStreak = maxOf(p.streakClass, p.streakSum)
         if (maxStreak >= Predictor.STREAK_THRESHOLD) {
             val which = when {
                 p.streakClass >= Predictor.STREAK_THRESHOLD &&
-                p.streakSum >= Predictor.STREAK_THRESHOLD -> "T/X + Điểm"
+                    p.streakSum >= Predictor.STREAK_THRESHOLD -> "T/X + Điểm"
                 p.streakClass >= Predictor.STREAK_THRESHOLD -> "T/X"
                 else -> "Điểm"
             }
