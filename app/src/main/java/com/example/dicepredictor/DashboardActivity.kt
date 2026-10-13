@@ -112,7 +112,7 @@ class DashboardActivity : AppCompatActivity() {
             return
         }
 
-        // Đếm T/X theo ngưỡng mới
+        // Đếm T/X theo ngưỡng mới (≥ 11 = T)
         val totalT = h.count { Predictor.classify(it.sum) == 'T' }
         val totalX = h.size - totalT
         val tPct = totalT * 100.0 / h.size
