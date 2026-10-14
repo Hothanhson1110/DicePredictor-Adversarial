@@ -1,7 +1,10 @@
 package com.example.dicepredictor
 
+import android.content.res.ColorStateList
+import android.graphics.Color
 import android.os.Bundle
 import android.view.LayoutInflater
+import android.view.View
 import android.view.ViewGroup
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
@@ -44,6 +47,9 @@ class DashboardActivity : AppCompatActivity() {
         b.rvResults.layoutManager = LinearLayoutManager(this)
         b.rvResults.adapter = adapter
 
+        // Tab switcher — style cho 2 nút
+        setupTabs()
+
         b.btnBack.setOnClickListener { finish() }
         b.btnRefresh.setOnClickListener { reload() }
 
@@ -78,6 +84,54 @@ class DashboardActivity : AppCompatActivity() {
         }
 
         reload()
+    }
+
+    // ============================================================
+    // TAB SWITCHER
+    // ============================================================
+
+    private fun setupTabs() {
+        val textStates = arrayOf(
+            intArrayOf(android.R.attr.state_checked),
+            intArrayOf()
+        )
+        val textCSL = ColorStateList(
+            textStates,
+            intArrayOf(Color.WHITE, Color.parseColor("#1A73E8"))
+        )
+        val bgCSL = ColorStateList(
+            textStates,
+            intArrayOf(Color.parseColor("#1A73E8"), Color.WHITE)
+        )
+
+        b.btnTabAnalysis.setTextColor(textCSL)
+        b.btnTabAnalysis.backgroundTintList = bgCSL
+        b.btnTabAnalysis.isAllCaps = false
+
+        b.btnTabHistory.setTextColor(textCSL)
+        b.btnTabHistory.backgroundTintList = bgCSL
+        b.btnTabHistory.isAllCaps = false
+
+        // Mặc định chọn tab Phân tích
+        b.tgTabs.check(b.btnTabAnalysis.id)
+
+        b.tgTabs.addOnButtonCheckedListener { _, checkedId, isChecked ->
+            if (!isChecked) return@addOnButtonCheckedListener
+            when (checkedId) {
+                b.btnTabAnalysis.id -> showTab(analysis = true)
+                b.btnTabHistory.id -> showTab(analysis = false)
+            }
+        }
+    }
+
+    private fun showTab(analysis: Boolean) {
+        if (analysis) {
+            b.scrollStats.visibility = View.VISIBLE
+            b.rvResults.visibility = View.GONE
+        } else {
+            b.scrollStats.visibility = View.GONE
+            b.rvResults.visibility = View.VISIBLE
+        }
     }
 
     // ============================================================
@@ -135,17 +189,11 @@ class DashboardActivity : AppCompatActivity() {
         }
 
         b.tvStats.text = buildString {
-            // ============================================================
-            // TỔNG QUAN
-            // ============================================================
             append("Tổng mẫu: ${h.size} / ${Predictor.WINDOW}\n")
             append("T (11-18): $totalT   (${"%.1f%%".format(tPct)})\n")
             append("X (3-10) : $totalX   (${"%.1f%%".format(xPct)})\n\n")
 
             if (p != null) {
-                // ============================================================
-                // DỰ ĐOÁN HIỆN TẠI
-                // ============================================================
                 append("Lần cuối: ${h.last().d1}-${h.last().d2}-${h.last().d3} = ")
                 append("${h.last().sum} (${Predictor.classify(h.last().sum)})\n")
                 append("Dự đoán tiếp: ${if (p.nextIsT) "T" else "X"} ")
@@ -154,9 +202,6 @@ class DashboardActivity : AppCompatActivity() {
                 append("Tổng khả năng nhất: ${p.bestSum}\n")
                 append("Mẫu dùng để tính: ${p.sampleCount}/${Predictor.WINDOW}\n")
 
-                // ============================================================
-                // ENSEMBLE
-                // ============================================================
                 append("\n--- Ensemble (Hedge) ---\n")
                 append("Accuracy dài hạn: ")
                 append("${"%.1f%%".format(p.ensembleAcc * 100)}\n")
@@ -171,9 +216,6 @@ class DashboardActivity : AppCompatActivity() {
                 append("Streak T/X: ${p.streakClass}")
                 append("  ·  Streak điểm: ${p.streakSum}\n")
 
-                // ============================================================
-                // REVERSAL SIGNALS (MỚI)
-                // ============================================================
                 append("\n--- Tín hiệu đảo chiều ---\n")
                 append("Regime30: ${"%.1f%%".format(p.regime30T * 100)} T")
                 append("  (cường độ ${"%.2f".format(p.regime30Signal)})\n")
@@ -187,11 +229,7 @@ class DashboardActivity : AppCompatActivity() {
                     append("🔶 Regime30 nghiêng mạnh → có thể đảo\n")
                 }
 
-                // ============================================================
-                // TIME-AWARE INFO
-                // ============================================================
                 append("\n--- Thời gian ---\n")
-
                 val ageStr = when {
                     p.dataAgeHours < 0.05 -> "vừa xong"
                     p.dataAgeHours < 1.0 ->
@@ -219,9 +257,6 @@ class DashboardActivity : AppCompatActivity() {
                 append("  ·  Win50: ${"%.1f%%".format(p.win50T * 100)}\n")
                 append("(Half-life = 10h · Session gap = 200 phút)\n")
 
-                // ============================================================
-                // TRỌNG SỐ CHUYÊN GIA
-                // ============================================================
                 append("\n--- Trọng số chuyên gia ---\n")
                 p.expertWeights
                     .sortedByDescending { it.second }
@@ -230,9 +265,6 @@ class DashboardActivity : AppCompatActivity() {
                         append("  $padded ${"%.1f%%".format(w * 100)}\n")
                     }
 
-                // ============================================================
-                // TRẠNG THÁI ĐẶC BIỆT
-                // ============================================================
                 if (p.regimeChange) {
                     append("\n⚠️ REGIME CHANGE đang diễn ra")
                     append(" (score ${"%.2f".format(p.regimeShiftScore)})\n")
@@ -242,9 +274,6 @@ class DashboardActivity : AppCompatActivity() {
                 }
             }
 
-            // ============================================================
-            // ĐÁM ĐÔNG
-            // ============================================================
             if (crowdTotal > 0) {
                 append("\n--- Đám đông ---\n")
                 append("Số lần có chọn: $crowdTotal\n")
@@ -252,9 +281,6 @@ class DashboardActivity : AppCompatActivity() {
                 append("(${"%.0f%%".format(crowdWrong * 100.0 / crowdTotal)})\n")
             }
 
-            // ============================================================
-            // PHÂN BỐ
-            // ============================================================
             append("\nPhân bố tổng (top 6):\n  $topSums\n")
             append("\nMặt X1: ${facesLine(faces[0])}\n")
             append("Mặt X2: ${facesLine(faces[1])}\n")
