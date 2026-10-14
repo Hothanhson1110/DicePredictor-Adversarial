@@ -43,12 +43,9 @@ class MainActivity : AppCompatActivity() {
 
         dao = AppDatabase.get(this).diceDao()
 
-        // Xây 3 hàng nút 1-6
         buildRow(b.tg1, 0)
         buildRow(b.tg2, 1)
         buildRow(b.tg3, 2)
-
-        // Xây hàng đám đông T / X / Không chắc
         buildCrowdRow()
 
         b.btnConfirm.setOnClickListener { onConfirm() }
@@ -68,7 +65,7 @@ class MainActivity : AppCompatActivity() {
     // UI BUILDERS
     // ============================================================
 
-    /** Tạo 6 nút 1..6 trong 1 MaterialButtonToggleGroup với màu rõ ràng. */
+    /** Tạo 6 nút 1..6 trong 1 MaterialButtonToggleGroup. */
     private fun buildRow(tg: MaterialButtonToggleGroup, rowIdx: Int) {
         val textStates = arrayOf(
             intArrayOf(android.R.attr.state_checked),
@@ -203,7 +200,6 @@ class MainActivity : AppCompatActivity() {
                 )
                 dao.insert(row)
 
-                // Auto-prune: giữ đúng WINDOW dòng
                 val c = dao.count()
                 if (c > Predictor.WINDOW) {
                     dao.deleteOldest(c - Predictor.WINDOW)
@@ -216,7 +212,6 @@ class MainActivity : AppCompatActivity() {
                 b.tgCrowd.check(b.tgCrowd.getChildAt(2).id)
             }
 
-            // Hiển thị trạng thái đúng/sai của dự đoán vừa rồi
             val status = if (pred == null) {
                 ""
             } else {
@@ -279,7 +274,7 @@ class MainActivity : AppCompatActivity() {
             if (p.nextIsT) 0xFF1E8E3E.toInt() else 0xFFD93025.toInt()
         )
 
-        // Thanh T | X
+        // Bar T | X
         val lp1 = b.barT.layoutParams as LinearLayout.LayoutParams
         lp1.weight = p.probT.toFloat()
         b.barT.layoutParams = lp1
@@ -303,7 +298,7 @@ class MainActivity : AppCompatActivity() {
             "${it.first} (${"%.0f%%".format(it.second * 100)})"
         }
 
-        // Khối accuracy + ensemble info
+        // Khối accuracy + ensemble
         b.tvAccuracy.text = buildString {
             append("📈 Accuracy ensemble: ")
             append("${"%.1f%%".format(p.ensembleAcc * 100)}\n")
@@ -315,7 +310,7 @@ class MainActivity : AppCompatActivity() {
             append("📊 Streak T/X: ${p.streakClass}  ·  Streak điểm: ${p.streakSum}")
         }
 
-        // Khối điều chỉnh + trạng thái adversarial
+        // Khối điều chỉnh + adversarial + reversal signals
         val adj = buildString {
             append("⚙ Raw pT = ${"%.1f%%".format(p.rawPT * 100)}")
             append("  ·  bias = ${"%+.1f%%".format(p.biasT * 100)}\n")
@@ -336,45 +331,25 @@ class MainActivity : AppCompatActivity() {
                 }
             )
 
+            // Reversal signals
+            append("\n🔄 Regime30: ${"%.0f%%".format(p.regime30T * 100)} T")
+            if (p.streak5Signal > 0) {
+                append("  ·  Streak5: ${"%.2f".format(p.streak5Signal)}")
+            }
+
             if (p.regimeChange) {
                 append("\n⚠️ PHÁT HIỆN ĐỔI REGIME — độ tin cậy đã giảm")
             }
             if (p.adversarialMode) {
                 append("\n🔴 CHẾ ĐỘ ĐỐI KHÁNG — model đang bị chơi, đã đảo dự đoán")
             }
+            if (p.streak5Signal > 0.5) {
+                append("\n🔶 Streak dài — cảnh báo đảo chiều cao")
+            }
         }
         b.tvAdjust.text = adj
 
-        // ============================================================
-        // TIME-AWARE INFO
-        // ============================================================
-        val timeInfo = buildString {
-            val ageStr = when {
-                p.dataAgeHours < 0.05 -> "vừa xong"
-                p.dataAgeHours < 1.0 -> "${"%.0f".format(p.dataAgeHours * 60)} phút trước"
-                p.dataAgeHours < 24 -> "${"%.1f".format(p.dataAgeHours)} giờ trước"
-                else -> "${"%.1f".format(p.dataAgeHours / 24)} ngày trước"
-            }
-            append("⏱ Dữ liệu cuối: $ageStr\n")
-
-            append("📦 Session hiện tại: ${p.currentSessionSize} ván")
-            append("  ·  Tổng session trong mẫu: ${p.numSessions}\n")
-
-            if (p.sessionGapHours > 0.5) {
-                val gapStr = if (p.sessionGapHours < 24)
-                    "${"%.1f".format(p.sessionGapHours)} giờ"
-                else "${"%.1f".format(p.sessionGapHours / 24)} ngày"
-                append("⏸ Nghỉ giữa 2 ván: $gapStr")
-            }
-            if (p.lastShrinkFactor < 0.9) {
-                append("  ·  Session gần nhất shrink: ")
-                append("${"%.0f%%".format(p.lastShrinkFactor * 100)}")
-            }
-        }
-        b.tvTimeInfo.text = timeInfo
-        b.tvTimeInfo.visibility = View.VISIBLE
-
-        // Banner streak ≥ 5
+        // Banner streak
         val maxStreak = maxOf(p.streakClass, p.streakSum)
         if (maxStreak >= Predictor.STREAK_THRESHOLD) {
             val which = when {
@@ -389,6 +364,36 @@ class MainActivity : AppCompatActivity() {
         } else {
             b.tvStreakBanner.visibility = View.GONE
         }
+
+        // Time-aware info
+        val timeInfo = buildString {
+            val ageStr = when {
+                p.dataAgeHours < 0.05 -> "vừa xong"
+                p.dataAgeHours < 1.0 ->
+                    "${"%.0f".format(p.dataAgeHours * 60)} phút trước"
+                p.dataAgeHours < 24 ->
+                    "${"%.1f".format(p.dataAgeHours)} giờ trước"
+                else ->
+                    "${"%.1f".format(p.dataAgeHours / 24)} ngày trước"
+            }
+            append("⏱ Dữ liệu cuối: $ageStr\n")
+
+            append("📦 Session hiện tại: ${p.currentSessionSize} ván")
+            append("  ·  Tổng session trong mẫu: ${p.numSessions}\n")
+
+            if (p.sessionGapHours > 0.5) {
+                val gapStr = if (p.sessionGapHours < 24)
+                    "${"%.1f".format(p.sessionGapHours)} giờ"
+                else "${"%.1f".format(p.sessionGapHours / 24)} ngày"
+                append("⏸ Nghỉ giữa 2 ván: $gapStr")
+            }
+            if (p.lastShrinkFactor < 0.999) {
+                append("  ·  Shrink session cuối: ")
+                append("${"%.0f%%".format(p.lastShrinkFactor * 100)}")
+            }
+        }
+        b.tvTimeInfo.text = timeInfo
+        b.tvTimeInfo.visibility = View.VISIBLE
 
         b.tvSample.text =
             "Mẫu phân tích: ${p.sampleCount} / ${Predictor.WINDOW}   (tổng DB: $total)"
