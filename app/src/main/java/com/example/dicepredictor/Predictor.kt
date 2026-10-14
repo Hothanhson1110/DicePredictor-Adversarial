@@ -14,10 +14,10 @@ object Predictor {
     // TIME-AWARE CONFIG
     // ============================================================
     /** Sau khoảng này, trọng số dữ liệu cũ giảm còn 50%. */
-    private const val HALF_LIFE_HOURS = 6.0
+    private const val HALF_LIFE_HOURS = 10.0
 
     /** Nghỉ > ngưỡng này → session mới → shrink state. */
-    private const val SESSION_GAP_MINUTES = 30
+    private const val SESSION_GAP_MINUTES = 200
 
     /** Session gap tính bằng milliseconds. */
     private const val SESSION_GAP_MS =
