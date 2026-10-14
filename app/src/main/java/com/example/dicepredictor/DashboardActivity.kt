@@ -28,7 +28,6 @@ class DashboardActivity : AppCompatActivity() {
     private lateinit var dao: DiceDao
     private val adapter = Adapter()
 
-    /** File export gần nhất — dùng cho nút Share. */
     private var lastExportFile: File? = null
 
     // ============================================================
@@ -45,16 +44,13 @@ class DashboardActivity : AppCompatActivity() {
         b.rvResults.layoutManager = LinearLayoutManager(this)
         b.rvResults.adapter = adapter
 
-        // Header
         b.btnBack.setOnClickListener { finish() }
         b.btnRefresh.setOnClickListener { reload() }
 
-        // Export
         b.btnExportCsv.setOnClickListener { doExport(csv = true) }
         b.btnExportJson.setOnClickListener { doExport(csv = false) }
         b.btnShareLast.setOnClickListener { shareLast() }
 
-        // Xoá
         b.btnDelete100.setOnClickListener {
             lifecycleScope.launch {
                 withContext(Dispatchers.IO) { dao.deleteLast(100) }
@@ -85,7 +81,7 @@ class DashboardActivity : AppCompatActivity() {
     }
 
     // ============================================================
-    // RELOAD DATA
+    // RELOAD
     // ============================================================
 
     private fun reload() {
@@ -96,7 +92,6 @@ class DashboardActivity : AppCompatActivity() {
             val pred = withContext(Dispatchers.Default) {
                 Predictor.predict(history)
             }
-            // Hiển thị list mới nhất lên đầu
             adapter.submitList(history.asReversed())
             renderStats(history, pred)
         }
@@ -112,13 +107,11 @@ class DashboardActivity : AppCompatActivity() {
             return
         }
 
-        // Đếm T/X theo ngưỡng mới (≥ 11 = T)
         val totalT = h.count { Predictor.classify(it.sum) == 'T' }
         val totalX = h.size - totalT
         val tPct = totalT * 100.0 / h.size
         val xPct = totalX * 100.0 / h.size
 
-        // Phân bố tổng
         val sumHist = IntArray(19)
         h.forEach { sumHist[it.sum]++ }
         val topSums = (3..18)
@@ -126,7 +119,6 @@ class DashboardActivity : AppCompatActivity() {
             .take(6)
             .joinToString("  ") { "$it:${sumHist[it]}" }
 
-        // Phân bố mặt xúc xắc
         val faces = Array(3) { IntArray(7) }
         h.forEach {
             faces[0][it.d1]++
@@ -136,7 +128,6 @@ class DashboardActivity : AppCompatActivity() {
         fun facesLine(a: IntArray) =
             (1..6).joinToString(" ") { "$it:${a[it]}" }
 
-        // Đếm đám đông
         val crowdTotal = h.count { it.crowdChoice != '?' }
         val crowdWrong = h.count { r ->
             if (r.crowdChoice == '?') false
@@ -164,7 +155,7 @@ class DashboardActivity : AppCompatActivity() {
                 append("Mẫu dùng để tính: ${p.sampleCount}/${Predictor.WINDOW}\n")
 
                 // ============================================================
-                // ENSEMBLE (HEDGE)
+                // ENSEMBLE
                 // ============================================================
                 append("\n--- Ensemble (Hedge) ---\n")
                 append("Accuracy dài hạn: ")
@@ -181,13 +172,28 @@ class DashboardActivity : AppCompatActivity() {
                 append("  ·  Streak điểm: ${p.streakSum}\n")
 
                 // ============================================================
+                // REVERSAL SIGNALS (MỚI)
+                // ============================================================
+                append("\n--- Tín hiệu đảo chiều ---\n")
+                append("Regime30: ${"%.1f%%".format(p.regime30T * 100)} T")
+                append("  (cường độ ${"%.2f".format(p.regime30Signal)})\n")
+                append("Streak5 signal: ")
+                append("${"%.2f".format(p.streak5Signal)}\n")
+
+                if (p.streak5Signal > 0.5) {
+                    append("🔶 Cảnh báo: streak dài → khả năng đảo cao\n")
+                }
+                if (p.regime30Signal > 0.30) {
+                    append("🔶 Regime30 nghiêng mạnh → có thể đảo\n")
+                }
+
+                // ============================================================
                 // TIME-AWARE INFO
                 // ============================================================
                 append("\n--- Thời gian ---\n")
 
                 val ageStr = when {
-                    p.dataAgeHours < 0.05 ->
-                        "vừa xong"
+                    p.dataAgeHours < 0.05 -> "vừa xong"
                     p.dataAgeHours < 1.0 ->
                         "${"%.0f".format(p.dataAgeHours * 60)} phút trước"
                     p.dataAgeHours < 24 ->
@@ -316,7 +322,7 @@ class DashboardActivity : AppCompatActivity() {
     }
 
     // ============================================================
-    // RECYCLERVIEW ADAPTER
+    // ADAPTER
     // ============================================================
 
     private inner class Adapter : ListAdapter<DiceResult, VH>(DIFF) {
@@ -339,14 +345,12 @@ class DashboardActivity : AppCompatActivity() {
         fun bind(r: DiceResult, pos: Int) {
             ib.tvIdx.text = "#${pos + 1}"
 
-            // Đánh dấu đúng/sai của dự đoán đã lưu trong dòng này
             val marks = if (r.hasPred) {
                 val t = if (r.classCorrect) "✓" else "✗"
                 val s = if (r.sumCorrect) "✓" else "✗"
                 "  [T/X $t · Điểm $s]"
             } else ""
 
-            // Đánh dấu đám đông nếu có
             val crowdMark = if (r.crowdChoice != '?')
                 "  👥${r.crowdChoice}" else ""
 
@@ -396,7 +400,6 @@ class DashboardActivity : AppCompatActivity() {
 
                 lifecycleScope.launch {
                     withContext(Dispatchers.IO) {
-                        // Cập nhật lại đúng/sai khi sửa
                         dao.update(
                             r.copy(
                                 d1 = d1, d2 = d2, d3 = d3, sum = newSum,
@@ -417,7 +420,7 @@ class DashboardActivity : AppCompatActivity() {
     }
 
     // ============================================================
-    // DIFF CALLBACK
+    // DIFF
     // ============================================================
 
     companion object {
