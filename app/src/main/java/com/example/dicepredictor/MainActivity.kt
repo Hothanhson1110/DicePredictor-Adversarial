@@ -265,6 +265,7 @@ class MainActivity : AppCompatActivity() {
             b.tvAccuracy.text = ""
             b.tvAdjust.text = ""
             b.tvStreakBanner.visibility = View.GONE
+            b.tvTimeInfo.visibility = View.GONE
             return
         }
 
