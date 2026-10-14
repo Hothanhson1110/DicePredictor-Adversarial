@@ -344,6 +344,35 @@ class MainActivity : AppCompatActivity() {
         }
         b.tvAdjust.text = adj
 
+        // ============================================================
+        // TIME-AWARE INFO
+        // ============================================================
+        val timeInfo = buildString {
+            val ageStr = when {
+                p.dataAgeHours < 0.05 -> "vừa xong"
+                p.dataAgeHours < 1.0 -> "${"%.0f".format(p.dataAgeHours * 60)} phút trước"
+                p.dataAgeHours < 24 -> "${"%.1f".format(p.dataAgeHours)} giờ trước"
+                else -> "${"%.1f".format(p.dataAgeHours / 24)} ngày trước"
+            }
+            append("⏱ Dữ liệu cuối: $ageStr\n")
+
+            append("📦 Session hiện tại: ${p.currentSessionSize} ván")
+            append("  ·  Tổng session trong mẫu: ${p.numSessions}\n")
+
+            if (p.sessionGapHours > 0.5) {
+                val gapStr = if (p.sessionGapHours < 24)
+                    "${"%.1f".format(p.sessionGapHours)} giờ"
+                else "${"%.1f".format(p.sessionGapHours / 24)} ngày"
+                append("⏸ Nghỉ giữa 2 ván: $gapStr")
+            }
+            if (p.lastShrinkFactor < 0.9) {
+                append("  ·  Session gần nhất shrink: ")
+                append("${"%.0f%%".format(p.lastShrinkFactor * 100)}")
+            }
+        }
+        b.tvTimeInfo.text = timeInfo
+        b.tvTimeInfo.visibility = View.VISIBLE
+
         // Banner streak ≥ 5
         val maxStreak = maxOf(p.streakClass, p.streakSum)
         if (maxStreak >= Predictor.STREAK_THRESHOLD) {
