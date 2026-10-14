@@ -3,6 +3,8 @@ package com.example.dicepredictor
 import com.example.dicepredictor.db.DiceResult
 import kotlin.math.abs
 import kotlin.math.exp
+import kotlin.math.ln
+import kotlin.math.sqrt
 
 object Predictor {
 
@@ -10,20 +12,13 @@ object Predictor {
     const val T_THRESHOLD = 11
     const val STREAK_THRESHOLD = 5
 
-    // ============================================================
-    // TIME-AWARE CONFIG
-    // ============================================================
-    /** Sau khoảng này, trọng số dữ liệu cũ giảm còn 50%. */
     private const val HALF_LIFE_HOURS = 10.0
-
-    /** Nghỉ > ngưỡng này → session mới → shrink state. */
     private const val SESSION_GAP_MINUTES = 200
+    private const val SESSION_GAP_MS = SESSION_GAP_MINUTES * 60L * 1000L
 
-    /** Session gap tính bằng milliseconds. */
-    private const val SESSION_GAP_MS =
-        SESSION_GAP_MINUTES * 60L * 1000L
-
-    // 13 chuyên gia
+    // ============================================================
+    // 17 chuyên gia
+    // ============================================================
     private const val E_EWMA_S = 0
     private const val E_EWMA_M = 1
     private const val E_EWMA_L = 2
@@ -37,20 +32,30 @@ object Predictor {
     private const val E_WIN50 = 10
     private const val E_STREAK = 11
     private const val E_ANTI_ENS = 12
-    private const val N_EXPERTS = 13
+    // ---- 4 chuyên gia MỚI — bắt pattern đảo chiều ----
+    private const val E_ALT = 13       // X-T-X / T-X-T / X-T-X-T
+    private const val E_BLOCK2 = 14    // XX-TT-XX / TT-XX-TT
+    private const val E_STREAK5 = 15   // streak ≥ 5 → đảo mạnh
+    private const val E_REGIME30 = 16  // 30 ván nghiêng nhiều → đảo
+    private const val N_EXPERTS = 17
 
     private val EXPERT_NAMES = arrayOf(
         "EWMA-S", "EWMA-M", "EWMA-L",
         "Markov1", "Markov2", "Markov3",
         "Pattern4", "AntiS", "Crowd",
-        "Win20", "Win50", "StreakBrk", "AntiEns"
+        "Win20", "Win50", "StreakBrk", "AntiEns",
+        "Alt", "Block2", "Streak5", "Regime30"
     )
 
-    private const val ETA = 0.05
-    private const val REGIME_DROP = 0.10
-    private const val ADV_N_MIN = 60
-    private const val ADV_CORR_THRESHOLD = -0.05
+    private const val ADV_CORR_THRESHOLD = -0.15
+    private const val ADV_N_MIN = 100
     private const val REGIME_STRONG = 0.20
+    private const val REGIME_DROP = 0.10
+
+    private const val BIAS_DECAY = 0.95
+    private const val ADV_DECAY = 0.95
+    private const val ACC_DECAY = 0.90
+    private const val EXPERT_ACC_DECAY = 0.95
 
     data class Prediction(
         val sampleCount: Int,
@@ -81,13 +86,16 @@ object Predictor {
         val rawPT: Double,
         val win20T: Double,
         val win50T: Double,
-
-        // ---- TIME-AWARE FIELDS ----
-        val dataAgeHours: Double,           // tuổi dữ liệu mới nhất (giờ)
-        val sessionGapHours: Double,        // gap giữa 2 ván cuối
-        val currentSessionSize: Int,        // số ván trong session hiện tại
-        val numSessions: Int,               // tổng số session trong 10K mẫu
-        val lastShrinkFactor: Double        // hệ số shrink của session cuối
+        // ---- MỚI: reversal signals ----
+        val streak5Signal: Double,      // 0..1 — cường độ tín hiệu reversal từ streak
+        val regime30T: Double,          // P(T) trong 30 ván gần nhất
+        val regime30Signal: Double,     // 0..1 — cường độ đảo từ regime 30
+        // ---- Time-aware ----
+        val dataAgeHours: Double,
+        val sessionGapHours: Double,
+        val currentSessionSize: Int,
+        val numSessions: Int,
+        val lastShrinkFactor: Double
     )
 
     fun classify(sum: Int): Char = if (sum >= T_THRESHOLD) 'T' else 'X'
@@ -98,16 +106,12 @@ object Predictor {
         val h = if (all.size > WINDOW) all.subList(all.size - WINDOW, all.size) else all
         val n = h.size
 
-        // Sắp xếp theo timestamp để chắc chắn (dữ liệu cũ có thể không đúng thứ tự)
-        // — bỏ qua nếu list đã được sort theo id (tương đương timestamp)
-
-        val eeta = exp(-ETA)
-        val expTable = DoubleArray(n + 1)
-        expTable[0] = 1.0
-        for (k in 1..n) expTable[k] = expTable[k - 1] * eeta
+        // Adaptive ETA — Hedge theory
+        val eta = sqrt(8.0 * ln(N_EXPERTS.toDouble()) / n.toDouble())
+            .coerceIn(0.02, 0.30)
 
         // ============================================================
-        // State
+        // State chuyên gia
         // ============================================================
         var ewmaS = 0.5; var ewmaM = 0.5; var ewmaL = 0.5
         val decS = 0.85; val decM = 0.97; val decL = 0.997
@@ -134,36 +138,31 @@ object Predictor {
         val face2 = DoubleArray(7) { 0.5 }
         val face3 = DoubleArray(7) { 0.5 }
 
-        // Window
+        // Ring buffers
         val win20 = BooleanArray(20)
         val win50 = BooleanArray(50)
-        var idx20 = 0; var idx50 = 0
-        var count20 = 0; var count50 = 0
-        var sumT20 = 0; var sumT50 = 0
+        val win30 = BooleanArray(30)
+        var idx20 = 0; var idx50 = 0; var idx30 = 0
+        var count20 = 0; var count50 = 0; var count30 = 0
+        var sumT20 = 0; var sumT50 = 0; var sumT30 = 0
 
         var curStreakT = 0
 
         // Meta
         val cumLoss = DoubleArray(N_EXPERTS)
-        val expertCorrect = IntArray(N_EXPERTS)
-        val expertTotal = IntArray(N_EXPERTS)
+        val expertAccEWMA = DoubleArray(N_EXPERTS) { 0.5 }
 
         var cumCorrect = 0.0
         var cumTotal = 0
         var recentAcc = 0.5
-        val recentDecay = 0.9
-
-        var biasSum = 0.0
-        var advSum = 0.0
-        var advN = 0
+        var biasEWMA = 0.0
+        var advEWMA = 0.0
 
         val predP = DoubleArray(N_EXPERTS)
         val ensHistory = DoubleArray(n)
 
-        // Time-aware tracking
         var numSessions = 1
         var lastShrinkFactor = 1.0
-        var sessionGapHoursLast = 0.0
 
         // ============================================================
         // VÒNG LẶP CHÍNH
@@ -172,72 +171,65 @@ object Predictor {
             val r = h[i]
             val actualT = r.sum >= T_THRESHOLD
 
-            // ----- SESSION BOUNDARY DETECTION -----
+            // ----- SESSION BOUNDARY -----
             if (i > 0) {
                 val gapMs = r.timestamp - h[i - 1].timestamp
                 if (gapMs > SESSION_GAP_MS) {
                     numSessions++
                     val gapHours = gapMs / 3_600_000.0
-                    sessionGapHoursLast = gapHours
                     val shrink = exp(-gapHours / HALF_LIFE_HOURS)
                     lastShrinkFactor = shrink
 
-                    // Shrink EWMA về 0.5
                     ewmaS = 0.5 + (ewmaS - 0.5) * shrink
                     ewmaM = 0.5 + (ewmaM - 0.5) * shrink
                     ewmaL = 0.5 + (ewmaL - 0.5) * shrink
 
-                    // Shrink Markov 1
                     m1_TT = 0.5 + (m1_TT - 0.5) * shrink
                     m1_TX = 0.5 + (m1_TX - 0.5) * shrink
                     m1_XT = 0.5 + (m1_XT - 0.5) * shrink
                     m1_XX = 0.5 + (m1_XX - 0.5) * shrink
 
-                    // Shrink Markov 2
                     for (k in 0 until 4) {
                         m2_T[k] = 0.5 + (m2_T[k] - 0.5) * shrink
                         m2_X[k] = 0.5 + (m2_X[k] - 0.5) * shrink
                     }
-
-                    // Shrink Markov 3
                     for (k in 0 until 8) {
                         m3_T[k] = 0.5 + (m3_T[k] - 0.5) * shrink
                         m3_X[k] = 0.5 + (m3_X[k] - 0.5) * shrink
                     }
-
-                    // Shrink Pattern 4
                     for (k in 0 until 16) {
                         p4_T[k] = 0.5 + (p4_T[k] - 0.5) * shrink
                         p4_X[k] = 0.5 + (p4_X[k] - 0.5) * shrink
                     }
 
-                    // Shrink Crowd
                     cT_T = 0.5 + (cT_T - 0.5) * shrink
                     cT_X = 0.5 + (cT_X - 0.5) * shrink
                     cX_T = 0.5 + (cX_T - 0.5) * shrink
                     cX_X = 0.5 + (cX_X - 0.5) * shrink
 
-                    // Shrink Hedge cumulative loss
                     for (e in 0 until N_EXPERTS) {
                         cumLoss[e] *= shrink
+                        expertAccEWMA[e] = 0.5 + (expertAccEWMA[e] - 0.5) * shrink
                     }
 
-                    // Shrink recent accuracy
                     recentAcc = 0.5 + (recentAcc - 0.5) * shrink
+                    biasEWMA *= shrink
+                    advEWMA *= shrink
 
-                    // Reset streak (không mang streak qua session)
                     curStreakT = 0
 
-                    // Reset windows (dữ liệu cũ không đại diện session mới)
                     for (k in 0 until 20) win20[k] = false
                     for (k in 0 until 50) win50[k] = false
-                    idx20 = 0; idx50 = 0
-                    count20 = 0; count50 = 0
-                    sumT20 = 0; sumT50 = 0
+                    for (k in 0 until 30) win30[k] = false
+                    idx20 = 0; idx50 = 0; idx30 = 0
+                    count20 = 0; count50 = 0; count30 = 0
+                    sumT20 = 0; sumT50 = 0; sumT30 = 0
                 }
             }
 
-            // ----- Dự đoán của từng chuyên gia -----
+            // ============================================================
+            // Dự đoán từng chuyên gia
+            // ============================================================
             predP[E_EWMA_S] = ewmaS
             predP[E_EWMA_M] = ewmaM
             predP[E_EWMA_L] = ewmaL
@@ -265,22 +257,90 @@ object Predictor {
             }
             predP[E_ANTI_ENS] = if (i > 0) 1.0 - ensHistory[i - 1] else 0.5
 
-            // ----- Cập nhật Hedge -----
-            for (e in 0 until N_EXPERTS) {
-                val predictedT = predP[e] >= 0.5
-                if (predictedT == actualT) {
-                    expertCorrect[e]++
-                } else {
-                    cumLoss[e] += 1.0
+            // ------------------------------------------------------------
+            // E_ALT — X-T-X / T-X-T / X-T-X-T / T-X-T-X
+            // Khi pattern alternate rõ → predict tiếp tục alternate
+            // ------------------------------------------------------------
+            predP[E_ALT] = if (i >= 3) {
+                when {
+                    // X-T-X → predict T (continue alternate)
+                    last3 == 0 && last2 == 1 && last1 == 0 -> 0.70
+                    // T-X-T → predict X
+                    last3 == 1 && last2 == 0 && last1 == 1 -> 0.30
+                    // X-T-X-T (4-bit alternating) → predict T
+                    last4 == 0 && last3 == 1 && last2 == 0 && last1 == 1 -> 0.72
+                    // T-X-T-X → predict X
+                    last4 == 1 && last3 == 0 && last2 == 1 && last1 == 0 -> 0.28
+                    else -> 0.5
                 }
-                expertTotal[e]++
+            } else 0.5
+
+            // ------------------------------------------------------------
+            // E_BLOCK2 — XX-TT-XX / TT-XX-TT
+            // Khi block 2-2 hoàn chỉnh → predict block tiếp theo
+            // ------------------------------------------------------------
+            predP[E_BLOCK2] = if (i >= 4) {
+                when {
+                    // XXTT → predict X (start new block)
+                    last4 == 0 && last3 == 0 && last2 == 1 && last1 == 1 -> 0.32
+                    // TTXX → predict T
+                    last4 == 1 && last3 == 1 && last2 == 0 && last1 == 0 -> 0.68
+                    // XX-TT-T (đang ở giữa block T) → predict T (block chưa hết)
+                    last5 == 0 && last4 == 0 && last3 == 1 && last2 == 1 && last1 == 1 -> 0.68
+                    // TT-XX-X → predict X
+                    last5 == 1 && last4 == 1 && last3 == 0 && last2 == 0 && last1 == 0 -> 0.32
+                    else -> 0.5
+                }
+            } else 0.5
+
+            // ------------------------------------------------------------
+            // E_STREAK5 — streak ≥ 5 → đảo mạnh
+            // ------------------------------------------------------------
+            predP[E_STREAK5] = when {
+                curStreakT >= 8 -> 0.12
+                curStreakT >= 7 -> 0.18
+                curStreakT >= 6 -> 0.22
+                curStreakT >= 5 -> 0.28
+                curStreakT <= -8 -> 0.88
+                curStreakT <= -7 -> 0.82
+                curStreakT <= -6 -> 0.78
+                curStreakT <= -5 -> 0.72
+                else -> 0.5
             }
 
-            // Ensemble cho ván i
+            // ------------------------------------------------------------
+            // E_REGIME30 — 30 ván nghiêng nhiều → đảo
+            // ------------------------------------------------------------
+            val p30 = if (count30 > 0) sumT30.toDouble() / count30 else 0.5
+            predP[E_REGIME30] = when {
+                p30 >= 0.65 -> 0.25   // T quá nhiều → đảo về X
+                p30 >= 0.55 -> 0.38
+                p30 <= 0.35 -> 0.75   // X quá nhiều → đảo về T
+                p30 <= 0.45 -> 0.62
+                else -> 0.5
+            }
+
+            // ============================================================
+            // Cập nhật Hedge + expert EWMA
+            // ============================================================
+            for (e in 0 until N_EXPERTS) {
+                val predictedT = predP[e] >= 0.5
+                val isCorrect = predictedT == actualT
+
+                if (isCorrect) {
+                    expertAccEWMA[e] = EXPERT_ACC_DECAY * expertAccEWMA[e] +
+                        (1 - EXPERT_ACC_DECAY) * 1.0
+                } else {
+                    cumLoss[e] += 1.0
+                    expertAccEWMA[e] = EXPERT_ACC_DECAY * expertAccEWMA[e]
+                }
+            }
+
+            // ----- Ensemble cho ván i -----
             var wSumLocal = 0.0
             var ensPLocal = 0.0
             for (e in 0 until N_EXPERTS) {
-                val w = expTable[cumLoss[e].toInt()]
+                val w = exp(-eta * cumLoss[e])
                 wSumLocal += w
                 ensPLocal += w * predP[e]
             }
@@ -290,18 +350,22 @@ object Predictor {
 
             if (ensT == actualT) {
                 cumCorrect += 1.0
-                recentAcc = recentDecay * recentAcc + (1 - recentDecay)
+                recentAcc = ACC_DECAY * recentAcc + (1 - ACC_DECAY)
             } else {
-                recentAcc = recentDecay * recentAcc
+                recentAcc = ACC_DECAY * recentAcc
             }
             cumTotal++
 
             val y = if (actualT) 1.0 else 0.0
-            biasSum += y - ensPLocal
-            advSum += (if (ensT) 1.0 else -1.0) * (if (actualT) 1.0 else -1.0)
-            advN++
+            biasEWMA = BIAS_DECAY * biasEWMA + (1 - BIAS_DECAY) * (y - ensPLocal)
 
-            // ----- Update chuyên gia -----
+            val ensSign = if (ensT) 1.0 else -1.0
+            val actualSign = if (actualT) 1.0 else -1.0
+            advEWMA = ADV_DECAY * advEWMA + (1 - ADV_DECAY) * (ensSign * actualSign)
+
+            // ============================================================
+            // Update chuyên gia
+            // ============================================================
             ewmaS = decS * ewmaS + (1 - decS) * y
             ewmaM = decM * ewmaM + (1 - decM) * y
             ewmaL = decL * ewmaL + (1 - decL) * y
@@ -331,8 +395,9 @@ object Predictor {
             face2[r.d2] += 1.0
             face3[r.d3] += 1.0
 
-            // Window
+            // ----- Ring buffers -----
             val bit = if (actualT) 1 else 0
+
             if (count20 >= 20) {
                 if (win20[idx20]) sumT20--
             } else count20++
@@ -347,14 +412,21 @@ object Predictor {
             if (actualT) sumT50++
             idx50 = (idx50 + 1) % 50
 
-            // Streak
+            if (count30 >= 30) {
+                if (win30[idx30]) sumT30--
+            } else count30++
+            win30[idx30] = actualT
+            if (actualT) sumT30++
+            idx30 = (idx30 + 1) % 30
+
+            // ----- Streak -----
             if (actualT) {
                 curStreakT = if (curStreakT > 0) curStreakT + 1 else 1
             } else {
                 curStreakT = if (curStreakT < 0) curStreakT - 1 else -1
             }
 
-            // Bit shift
+            // ----- Bit shift -----
             last1 = bit
             last2 = ((last2 shl 1) or bit) and 0b11
             last3 = ((last3 shl 1) or bit) and 0b111
@@ -392,11 +464,53 @@ object Predictor {
         }
         finalP[E_ANTI_ENS] = if (n > 0) 1.0 - ensHistory[n - 1] else 0.5
 
-        // Hedge weights
+        // ---- 4 chuyên gia mới ----
+        finalP[E_ALT] = if (n >= 3) {
+            when {
+                last3 == 0 && last2 == 1 && last1 == 0 -> 0.70
+                last3 == 1 && last2 == 0 && last1 == 1 -> 0.30
+                last4 == 0 && last3 == 1 && last2 == 0 && last1 == 1 -> 0.72
+                last4 == 1 && last3 == 0 && last2 == 1 && last1 == 0 -> 0.28
+                else -> 0.5
+            }
+        } else 0.5
+
+        // Để check block2 ở cuối, dùng last4 và bit trước đó — cần lịch sử.
+        // Ở đây chỉ dùng 4 bit cuối:
+        finalP[E_BLOCK2] = if (n >= 4) {
+            when {
+                last4 == 0 && last3 == 0 && last2 == 1 && last1 == 1 -> 0.32
+                last4 == 1 && last3 == 1 && last2 == 0 && last1 == 0 -> 0.68
+                else -> 0.5
+            }
+        } else 0.5
+
+        finalP[E_STREAK5] = when {
+            curStreakT >= 8 -> 0.12
+            curStreakT >= 7 -> 0.18
+            curStreakT >= 6 -> 0.22
+            curStreakT >= 5 -> 0.28
+            curStreakT <= -8 -> 0.88
+            curStreakT <= -7 -> 0.82
+            curStreakT <= -6 -> 0.78
+            curStreakT <= -5 -> 0.72
+            else -> 0.5
+        }
+
+        val finalP30 = if (count30 > 0) sumT30.toDouble() / count30 else 0.5
+        finalP[E_REGIME30] = when {
+            finalP30 >= 0.65 -> 0.25
+            finalP30 >= 0.55 -> 0.38
+            finalP30 <= 0.35 -> 0.75
+            finalP30 <= 0.45 -> 0.62
+            else -> 0.5
+        }
+
+        // ----- Hedge weights -----
         val weights = DoubleArray(N_EXPERTS)
         var wSum2 = 0.0
         for (e in 0 until N_EXPERTS) {
-            weights[e] = expTable[cumLoss[e].toInt()]
+            weights[e] = exp(-eta * cumLoss[e])
             wSum2 += weights[e]
         }
         for (e in 0 until N_EXPERTS) weights[e] /= wSum2
@@ -405,39 +519,44 @@ object Predictor {
         for (e in 0 until N_EXPERTS) pT += weights[e] * finalP[e]
         val rawPT = pT
 
-        val biasT = if (cumTotal > 0)
-            (biasSum / cumTotal).coerceIn(-0.10, 0.10) else 0.0
+        // Bias correction
+        val biasT = biasEWMA.coerceIn(-0.10, 0.10)
         pT = (pT + biasT * 0.5).coerceIn(0.02, 0.98)
 
         // Adversarial
-        val advCorr = if (advN > 0) advSum / advN else 0.0
+        val advCorr = advEWMA.coerceIn(-1.0, 1.0)
         var adversarialMode = false
         var flipped = false
-        if (advN >= ADV_N_MIN && advCorr < ADV_CORR_THRESHOLD) {
+        if (cumTotal >= ADV_N_MIN && advCorr < ADV_CORR_THRESHOLD) {
             adversarialMode = true
             flipped = true
             val alpha = (-advCorr).coerceAtMost(0.55)
             pT = pT * (1 - alpha) + (1 - pT) * alpha
         }
 
-        // Regime
+        // Regime detection
         val longAcc = if (cumTotal > 0) cumCorrect / cumTotal else 0.5
 
-        val first20End = minOf(20, n)
-        var first20T = 0
-        for (i in 0 until first20End) if (h[i].sum >= T_THRESHOLD) first20T++
-        val first20Rate = if (first20End > 0) first20T.toDouble() / first20End else 0.5
+        val recentStart = maxOf(0, n - 20)
+        val midEnd = recentStart
+        val midStart = maxOf(0, recentStart - 20)
 
-        val last20Start = maxOf(0, n - 20)
-        var last20T = 0
-        var last20N = 0
-        for (i in last20Start until n) {
-            if (h[i].sum >= T_THRESHOLD) last20T++
-            last20N++
+        var recentT = 0
+        var recentN = 0
+        for (i in recentStart until n) {
+            if (h[i].sum >= T_THRESHOLD) recentT++
+            recentN++
         }
-        val last20Rate = if (last20N > 0) last20T.toDouble() / last20N else 0.5
+        var midT = 0
+        var midN = 0
+        for (i in midStart until midEnd) {
+            if (h[i].sum >= T_THRESHOLD) midT++
+            midN++
+        }
+        val recentRate = if (recentN > 0) recentT.toDouble() / recentN else 0.5
+        val midRate = if (midN > 0) midT.toDouble() / midN else 0.5
 
-        val regimeShiftScore = abs(last20Rate - first20Rate)
+        val regimeShiftScore = abs(recentRate - midRate)
         val regimeChange = n > 40 && (
             regimeShiftScore > REGIME_STRONG ||
             (cumTotal > 100 && recentAcc < longAcc - REGIME_DROP)
@@ -495,11 +614,12 @@ object Predictor {
         }
 
         // Best/worst expert
-        var bestIdx = 0; var worstIdx = 0
-        var bestA = -1.0; var worstA = 2.0
+        var bestIdx = 0
+        var worstIdx = 0
+        var bestA = -1.0
+        var worstA = 2.0
         for (e in 0 until N_EXPERTS) {
-            val a = if (expertTotal[e] > 0)
-                expertCorrect[e].toDouble() / expertTotal[e] else 0.0
+            val a = expertAccEWMA[e]
             if (a > bestA) { bestA = a; bestIdx = e }
             if (a < worstA) { worstA = a; worstIdx = e }
         }
@@ -507,24 +627,29 @@ object Predictor {
         val crowdRate = cT_X / (cT_T + cT_X)
         val contrarianAdj = crowdRate - 0.5
 
-        // ============================================================
-        // TIME-AWARE METRICS
-        // ============================================================
+        // Time-aware metrics
         val now = System.currentTimeMillis()
         val latestTs = h[n - 1].timestamp
-        val dataAgeHours = (now - latestTs) / 3_600_000.0
+        val dataAgeHours = ((now - latestTs) / 3_600_000.0).coerceAtLeast(0.0)
 
         val sessionGapHours = if (n >= 2) {
             (h[n - 1].timestamp - h[n - 2].timestamp) / 3_600_000.0
         } else 0.0
 
-        // Đếm size session hiện tại (ngược từ cuối)
         var currentSessionSize = 1
         for (i in n - 2 downTo 0) {
             val gap = h[i + 1].timestamp - h[i].timestamp
             if (gap > SESSION_GAP_MS) break
             currentSessionSize++
         }
+
+        // Reversal signals cho UI hiển thị
+        val streak5Signal = when {
+            curStreakT >= 5 -> (curStreakT / 10.0).coerceAtMost(1.0)
+            curStreakT <= -5 -> (-curStreakT / 10.0).coerceAtMost(1.0)
+            else -> 0.0
+        }
+        val regime30Signal = abs(finalP30 - 0.5) * 2.0  // 0..1
 
         return Prediction(
             sampleCount = n,
@@ -552,6 +677,9 @@ object Predictor {
             rawPT = rawPT,
             win20T = if (count20 > 0) sumT20.toDouble() / count20 else 0.5,
             win50T = if (count50 > 0) sumT50.toDouble() / count50 else 0.5,
+            streak5Signal = streak5Signal,
+            regime30T = finalP30,
+            regime30Signal = regime30Signal,
             dataAgeHours = dataAgeHours,
             sessionGapHours = sessionGapHours,
             currentSessionSize = currentSessionSize,
