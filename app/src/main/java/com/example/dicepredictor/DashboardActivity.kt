@@ -211,7 +211,7 @@ class DashboardActivity : AppCompatActivity() {
                 }
                 append("Win20: ${"%.1f%%".format(p.win20T * 100)}")
                 append("  ·  Win50: ${"%.1f%%".format(p.win50T * 100)}\n")
-                append("(Half-life = 6h · Session gap = 30 phút)\n")
+                append("(Half-life = 10h · Session gap = 100 phút)\n")
 
                 // ============================================================
                 // TRỌNG SỐ CHUYÊN GIA
