@@ -16,9 +16,6 @@ object Predictor {
     private const val SESSION_GAP_MINUTES = 200
     private const val SESSION_GAP_MS = SESSION_GAP_MINUTES * 60L * 1000L
 
-    // ============================================================
-    // 17 chuyên gia
-    // ============================================================
     private const val E_EWMA_S = 0
     private const val E_EWMA_M = 1
     private const val E_EWMA_L = 2
@@ -32,11 +29,10 @@ object Predictor {
     private const val E_WIN50 = 10
     private const val E_STREAK = 11
     private const val E_ANTI_ENS = 12
-    // ---- 4 chuyên gia MỚI — bắt pattern đảo chiều ----
-    private const val E_ALT = 13       // X-T-X / T-X-T / X-T-X-T
-    private const val E_BLOCK2 = 14    // XX-TT-XX / TT-XX-TT
-    private const val E_STREAK5 = 15   // streak ≥ 5 → đảo mạnh
-    private const val E_REGIME30 = 16  // 30 ván nghiêng nhiều → đảo
+    private const val E_ALT = 13
+    private const val E_BLOCK2 = 14
+    private const val E_STREAK5 = 15
+    private const val E_REGIME30 = 16
     private const val N_EXPERTS = 17
 
     private val EXPERT_NAMES = arrayOf(
@@ -86,11 +82,9 @@ object Predictor {
         val rawPT: Double,
         val win20T: Double,
         val win50T: Double,
-        // ---- MỚI: reversal signals ----
-        val streak5Signal: Double,      // 0..1 — cường độ tín hiệu reversal từ streak
-        val regime30T: Double,          // P(T) trong 30 ván gần nhất
-        val regime30Signal: Double,     // 0..1 — cường độ đảo từ regime 30
-        // ---- Time-aware ----
+        val streak5Signal: Double,
+        val regime30T: Double,
+        val regime30Signal: Double,
         val dataAgeHours: Double,
         val sessionGapHours: Double,
         val currentSessionSize: Int,
@@ -106,13 +100,9 @@ object Predictor {
         val h = if (all.size > WINDOW) all.subList(all.size - WINDOW, all.size) else all
         val n = h.size
 
-        // Adaptive ETA — Hedge theory
         val eta = sqrt(8.0 * ln(N_EXPERTS.toDouble()) / n.toDouble())
             .coerceIn(0.02, 0.30)
 
-        // ============================================================
-        // State chuyên gia
-        // ============================================================
         var ewmaS = 0.5; var ewmaM = 0.5; var ewmaL = 0.5
         val decS = 0.85; val decM = 0.97; val decL = 0.997
 
@@ -128,6 +118,7 @@ object Predictor {
         val m3_X = DoubleArray(8) { 0.5 }
 
         var last4 = 0
+        var last5 = 0
         val p4_T = DoubleArray(16) { 0.5 }
         val p4_X = DoubleArray(16) { 0.5 }
 
@@ -138,7 +129,6 @@ object Predictor {
         val face2 = DoubleArray(7) { 0.5 }
         val face3 = DoubleArray(7) { 0.5 }
 
-        // Ring buffers
         val win20 = BooleanArray(20)
         val win50 = BooleanArray(50)
         val win30 = BooleanArray(30)
@@ -148,7 +138,6 @@ object Predictor {
 
         var curStreakT = 0
 
-        // Meta
         val cumLoss = DoubleArray(N_EXPERTS)
         val expertAccEWMA = DoubleArray(N_EXPERTS) { 0.5 }
 
@@ -164,14 +153,10 @@ object Predictor {
         var numSessions = 1
         var lastShrinkFactor = 1.0
 
-        // ============================================================
-        // VÒNG LẶP CHÍNH
-        // ============================================================
         for (i in 0 until n) {
             val r = h[i]
             val actualT = r.sum >= T_THRESHOLD
 
-            // ----- SESSION BOUNDARY -----
             if (i > 0) {
                 val gapMs = r.timestamp - h[i - 1].timestamp
                 if (gapMs > SESSION_GAP_MS) {
@@ -227,9 +212,6 @@ object Predictor {
                 }
             }
 
-            // ============================================================
-            // Dự đoán từng chuyên gia
-            // ============================================================
             predP[E_EWMA_S] = ewmaS
             predP[E_EWMA_M] = ewmaM
             predP[E_EWMA_L] = ewmaL
@@ -257,45 +239,28 @@ object Predictor {
             }
             predP[E_ANTI_ENS] = if (i > 0) 1.0 - ensHistory[i - 1] else 0.5
 
-            // ------------------------------------------------------------
-            // E_ALT — X-T-X / T-X-T / X-T-X-T / T-X-T-X
-            // Khi pattern alternate rõ → predict tiếp tục alternate
-            // ------------------------------------------------------------
             predP[E_ALT] = if (i >= 3) {
                 when {
-                    // X-T-X → predict T (continue alternate)
                     last3 == 0 && last2 == 1 && last1 == 0 -> 0.70
-                    // T-X-T → predict X
                     last3 == 1 && last2 == 0 && last1 == 1 -> 0.30
-                    // X-T-X-T (4-bit alternating) → predict T
                     last4 == 0 && last3 == 1 && last2 == 0 && last1 == 1 -> 0.72
-                    // T-X-T-X → predict X
                     last4 == 1 && last3 == 0 && last2 == 1 && last1 == 0 -> 0.28
                     else -> 0.5
                 }
             } else 0.5
 
-            // ------------------------------------------------------------
-            // E_BLOCK2 — XX-TT-XX / TT-XX-TT
-            // Khi block 2-2 hoàn chỉnh → predict block tiếp theo
-            // ------------------------------------------------------------
             predP[E_BLOCK2] = if (i >= 4) {
                 when {
-                    // XXTT → predict X (start new block)
                     last4 == 0 && last3 == 0 && last2 == 1 && last1 == 1 -> 0.32
-                    // TTXX → predict T
                     last4 == 1 && last3 == 1 && last2 == 0 && last1 == 0 -> 0.68
-                    // XX-TT-T (đang ở giữa block T) → predict T (block chưa hết)
-                    last5 == 0 && last4 == 0 && last3 == 1 && last2 == 1 && last1 == 1 -> 0.68
-                    // TT-XX-X → predict X
-                    last5 == 1 && last4 == 1 && last3 == 0 && last2 == 0 && last1 == 0 -> 0.32
+                    last5 == 0 && last4 == 0 && last3 == 1 &&
+                        last2 == 1 && last1 == 1 -> 0.68
+                    last5 == 1 && last4 == 1 && last3 == 0 &&
+                        last2 == 0 && last1 == 0 -> 0.32
                     else -> 0.5
                 }
             } else 0.5
 
-            // ------------------------------------------------------------
-            // E_STREAK5 — streak ≥ 5 → đảo mạnh
-            // ------------------------------------------------------------
             predP[E_STREAK5] = when {
                 curStreakT >= 8 -> 0.12
                 curStreakT >= 7 -> 0.18
@@ -308,21 +273,15 @@ object Predictor {
                 else -> 0.5
             }
 
-            // ------------------------------------------------------------
-            // E_REGIME30 — 30 ván nghiêng nhiều → đảo
-            // ------------------------------------------------------------
             val p30 = if (count30 > 0) sumT30.toDouble() / count30 else 0.5
             predP[E_REGIME30] = when {
-                p30 >= 0.65 -> 0.25   // T quá nhiều → đảo về X
+                p30 >= 0.65 -> 0.25
                 p30 >= 0.55 -> 0.38
-                p30 <= 0.35 -> 0.75   // X quá nhiều → đảo về T
+                p30 <= 0.35 -> 0.75
                 p30 <= 0.45 -> 0.62
                 else -> 0.5
             }
 
-            // ============================================================
-            // Cập nhật Hedge + expert EWMA
-            // ============================================================
             for (e in 0 until N_EXPERTS) {
                 val predictedT = predP[e] >= 0.5
                 val isCorrect = predictedT == actualT
@@ -336,7 +295,6 @@ object Predictor {
                 }
             }
 
-            // ----- Ensemble cho ván i -----
             var wSumLocal = 0.0
             var ensPLocal = 0.0
             for (e in 0 until N_EXPERTS) {
@@ -363,9 +321,6 @@ object Predictor {
             val actualSign = if (actualT) 1.0 else -1.0
             advEWMA = ADV_DECAY * advEWMA + (1 - ADV_DECAY) * (ensSign * actualSign)
 
-            // ============================================================
-            // Update chuyên gia
-            // ============================================================
             ewmaS = decS * ewmaS + (1 - decS) * y
             ewmaM = decM * ewmaM + (1 - decM) * y
             ewmaL = decL * ewmaL + (1 - decL) * y
@@ -395,7 +350,6 @@ object Predictor {
             face2[r.d2] += 1.0
             face3[r.d3] += 1.0
 
-            // ----- Ring buffers -----
             val bit = if (actualT) 1 else 0
 
             if (count20 >= 20) {
@@ -419,23 +373,19 @@ object Predictor {
             if (actualT) sumT30++
             idx30 = (idx30 + 1) % 30
 
-            // ----- Streak -----
             if (actualT) {
                 curStreakT = if (curStreakT > 0) curStreakT + 1 else 1
             } else {
                 curStreakT = if (curStreakT < 0) curStreakT - 1 else -1
             }
 
-            // ----- Bit shift -----
             last1 = bit
             last2 = ((last2 shl 1) or bit) and 0b11
             last3 = ((last3 shl 1) or bit) and 0b111
             last4 = ((last4 shl 1) or bit) and 0b1111
+            last5 = ((last5 shl 1) or bit) and 0b11111
         }
 
-        // ============================================================
-        // DỰ ĐOÁN CUỐI
-        // ============================================================
         val finalP = DoubleArray(N_EXPERTS)
         finalP[E_EWMA_S] = ewmaS
         finalP[E_EWMA_M] = ewmaM
@@ -464,7 +414,6 @@ object Predictor {
         }
         finalP[E_ANTI_ENS] = if (n > 0) 1.0 - ensHistory[n - 1] else 0.5
 
-        // ---- 4 chuyên gia mới ----
         finalP[E_ALT] = if (n >= 3) {
             when {
                 last3 == 0 && last2 == 1 && last1 == 0 -> 0.70
@@ -475,12 +424,14 @@ object Predictor {
             }
         } else 0.5
 
-        // Để check block2 ở cuối, dùng last4 và bit trước đó — cần lịch sử.
-        // Ở đây chỉ dùng 4 bit cuối:
-        finalP[E_BLOCK2] = if (n >= 4) {
+        finalP[E_BLOCK2] = if (n >= 5) {
             when {
                 last4 == 0 && last3 == 0 && last2 == 1 && last1 == 1 -> 0.32
                 last4 == 1 && last3 == 1 && last2 == 0 && last1 == 0 -> 0.68
+                last5 == 0 && last4 == 0 && last3 == 1 &&
+                    last2 == 1 && last1 == 1 -> 0.68
+                last5 == 1 && last4 == 1 && last3 == 0 &&
+                    last2 == 0 && last1 == 0 -> 0.32
                 else -> 0.5
             }
         } else 0.5
@@ -506,7 +457,6 @@ object Predictor {
             else -> 0.5
         }
 
-        // ----- Hedge weights -----
         val weights = DoubleArray(N_EXPERTS)
         var wSum2 = 0.0
         for (e in 0 until N_EXPERTS) {
@@ -519,11 +469,9 @@ object Predictor {
         for (e in 0 until N_EXPERTS) pT += weights[e] * finalP[e]
         val rawPT = pT
 
-        // Bias correction
         val biasT = biasEWMA.coerceIn(-0.10, 0.10)
         pT = (pT + biasT * 0.5).coerceIn(0.02, 0.98)
 
-        // Adversarial
         val advCorr = advEWMA.coerceIn(-1.0, 1.0)
         var adversarialMode = false
         var flipped = false
@@ -534,7 +482,6 @@ object Predictor {
             pT = pT * (1 - alpha) + (1 - pT) * alpha
         }
 
-        // Regime detection
         val longAcc = if (cumTotal > 0) cumCorrect / cumTotal else 0.5
 
         val recentStart = maxOf(0, n - 20)
@@ -567,9 +514,6 @@ object Predictor {
         pT = pT.coerceIn(0.02, 0.98)
         val pX = 1.0 - pT
 
-        // ============================================================
-        // BestSum convolution
-        // ============================================================
         val pf1 = DoubleArray(7); val pf2 = DoubleArray(7); val pf3 = DoubleArray(7)
         var s1 = 0.0; var s2 = 0.0; var s3 = 0.0
         for (v in 1..6) { s1 += face1[v]; s2 += face2[v]; s3 += face3[v] }
@@ -599,7 +543,6 @@ object Predictor {
             (1..6).associateWith { pf3[it] }
         )
 
-        // Streak
         var streakClass = 0
         for (i in n - 1 downTo 0) {
             val r = h[i]
@@ -613,7 +556,6 @@ object Predictor {
             if (r.sumCorrect) streakSum++ else break
         }
 
-        // Best/worst expert
         var bestIdx = 0
         var worstIdx = 0
         var bestA = -1.0
@@ -627,7 +569,6 @@ object Predictor {
         val crowdRate = cT_X / (cT_T + cT_X)
         val contrarianAdj = crowdRate - 0.5
 
-        // Time-aware metrics
         val now = System.currentTimeMillis()
         val latestTs = h[n - 1].timestamp
         val dataAgeHours = ((now - latestTs) / 3_600_000.0).coerceAtLeast(0.0)
@@ -643,13 +584,12 @@ object Predictor {
             currentSessionSize++
         }
 
-        // Reversal signals cho UI hiển thị
         val streak5Signal = when {
             curStreakT >= 5 -> (curStreakT / 10.0).coerceAtMost(1.0)
             curStreakT <= -5 -> (-curStreakT / 10.0).coerceAtMost(1.0)
             else -> 0.0
         }
-        val regime30Signal = abs(finalP30 - 0.5) * 2.0  // 0..1
+        val regime30Signal = abs(finalP30 - 0.5) * 2.0
 
         return Prediction(
             sampleCount = n,
